@@ -38,6 +38,9 @@ with mp_hands.Hands(min_detection_confidence=0.8,min_tracking_confidence=0.5) as
                 mp_drawing.draw_landmarks(image,hand,mp_hands.HAND_CONNECTIONS)
 
 
+        #flip horizontally
+        image = cv2.flip(image,1)
+        
         #Calculate FPS
         font = cv2.FONT_HERSHEY_SIMPLEX
 
