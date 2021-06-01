@@ -1,74 +1,38 @@
-import Layers
-import numpy as np
-from matplotlib.image import imread
-import os
+import HandTracking_min as htm
+import cv2
 import time
-import matplotlib.pyplot as plt
+import mediapipe as mp
 
-path = os.path.join(os.getcwd(),"Data","test.jpg")
-img = imread(path)
-obj = Layers.ConvLayer()
+pTime = 0
+cTime = 0
+cap = cv2.VideoCapture(0)
 
-"""
-a = np.random.randn(5,2,3,4)
-b = np.random.randn(1,1,1)
-c = np.sum(a)
-d = float(b)
-"""
+detector = htm.handDetector()
 
-"""
- #test zero padding
-np.random.seed(1)
-x = np.random.randn(4, 3, 3, 2)
-x_pad = obj.zero_padding(x,2,2)
-print ("x.shape =\n", x.shape)
-print ("x_pad.shape =\n", x_pad.shape)
-print ("x[1,1] =\n", x[1,1])
-print ("x_pad[1,1] =\n", x_pad[1,1])
-"""
+while cap.isOpened():
 
-"""
-#test conv forward and same padding
-np.random.seed(1)
-A_prev = np.random.randn(10,5,7,4)
-W = np.random.randn(3,3,4,8)
-b = np.random.randn(1,1,1,8)
-padH,padW,stride = 1,1,2
+    success,img = cap.read()
+    img = detector.findHands(img)
+    lmList = detector.findPosition(img)
+    
+    if len(lmList) != 0:
 
-Z, cache_conv = obj.conv_forward(A_prev, W, b,stride,padH,padW)
+        pass
 
-print("Z's mean =\n", np.mean(Z))
-print("Z[3,2,1] =\n", Z[3,2,1])
-print("cache_conv[0][1][2][3] =\n", cache_conv[0][1][2][3])
+    cTime = time.time()
+    fps = 1/(cTime-pTime)
+    pTime = cTime
 
-np.random.seed(1)
-A_prev = np.random.randn(10,5,7,4)
-W = np.random.randn(2,5,4,8)
-b = np.random.randn(1,1,1,8)
-padH,padW,stride = 1,1,2
+    img = cv2.flip(img,1)
+    
+    cv2.putText(img,str(int(fps)),(10,70),cv2.FONT_HERSHEY_COMPLEX,3,(100,255,0),3)
 
-Z, cache_conv = obj.conv_forward(A_prev, W, b,stride,padH,padW)
+    cv2.imshow("Hand Tracking",img)
 
-print("Z's mean =\n", np.mean(Z))
-print("Z[3,2,1] =\n", Z[3,2,1])
-print("cache_conv[0][1][2][3] =\n", cache_conv[0][1][2][3])
+    if (cv2.waitKey(1) & 0xFF ) == ord('q'):
 
-Z, cache_conv = obj.conv_forward(A_prev, W, b,stride,padding="Same")
-print("Shape of Z:{}".format(Z.shape[1:3]))
+        break
 
-A_prev = np.expand_dims(img/255,axis=0)
-W = np.random.randn(1024,1880,3,1)
-b = np.random.randn(1,1,1,2)
-Z, cache_conv = obj.conv_forward(A_prev, W, b,stride,padding="Valid")
-print("Shape of Z:{}".format(Z.shape[1:3]))
-"""
-"""
-#test conv step forward
-np.random.seed(1)
-a_slice_prev = np.random.randn(4, 4, 3)
-W = np.random.randn(4, 4, 3)
-b = np.random.randn(1, 1, 1)
 
-Z = obj.conv_step_forward(a_slice_prev, W, b)
-print("Z =", Z)
-"""
+cap.release()
+cv2.destroyAllWindows()
