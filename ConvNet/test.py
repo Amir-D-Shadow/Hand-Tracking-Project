@@ -57,11 +57,12 @@ Z, cache_conv = obj.conv_forward(A_prev, W, b,stride,padding="Same")
 print("Shape of Z:{}".format(Z.shape[1:3]))
 
 A_prev = np.expand_dims(img/255,axis=0)
-W = np.random.randn(550,550,3,5)
-b = np.random.randn(1,1,1,5)
+W = np.random.randn(3,3,3,128)
+b = np.random.randn(1,1,1,128)
 Z, cache_conv = obj.conv_forward(A_prev, W, b,stride,padding="Valid")
 print("Shape of Z:{}".format(Z.shape[1:3]))
 """
+
 """
 #test conv step forward
 np.random.seed(1)
@@ -71,4 +72,43 @@ b = np.random.randn(1, 1, 1)
 
 Z = obj.conv_step_forward(a_slice_prev, W, b)
 print("Z =", Z)
+"""
+
+"""
+#test max pooling
+#stride 1
+np.random.seed(1)
+A_prev = np.random.randn(2, 5, 5, 3)
+stride,fH,fW = 1,3,3
+
+obj = Layers.PoolingLayer()
+
+A, cache = obj.Pooling(A_prev, stride,fH,fW)
+print("mode = max")
+print("A.shape = " + str(A.shape))
+print("A =\n", A)
+print()
+
+A, cache = obj.Pooling(A_prev, stride,fH,fW, mode = "AVERAGE")
+
+print("mode = average")
+print("A.shape = " + str(A.shape))
+print("A =\n", A)
+
+#stride 2
+np.random.seed(1)
+A_prev = np.random.randn(2, 5, 5, 3)
+stride,fH,fW = 2,3,3
+
+A, cache = obj.Pooling(A_prev, stride,fH,fW)
+print("mode = max")
+print("A.shape = " + str(A.shape))
+print("A =\n", A)
+print()
+
+A, cache = obj.Pooling(A_prev, stride,fH,fW, mode = "AVERAGE")
+print("mode = average")
+print("A.shape = " + str(A.shape))
+print("A =\n", A)
+
 """

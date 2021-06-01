@@ -141,7 +141,7 @@ class PoolingLayer:
         self.stride = stride
 
 
-    def MaxPooling(self,A_prev,stride,fH,fW,padding="Same"):
+    def Pooling(self,A_prev,stride,fH,fW,mode="MAX",padding="Valid"):
 
         """
         A_prev -- output activations of the previous layer, numpy array of shape (m, n_H_prev, n_W_prev, n_C_prev)
@@ -161,6 +161,8 @@ class PoolingLayer:
 
         else:
 
+            A_prev_pad = A_prev.copy()
+            
             n_H = int((n_H_prev-fH)/stride)+1
             n_W = int((n_W_prev-fW)/stride)+1
 
@@ -179,6 +181,30 @@ class PoolingLayer:
                 vert_start = h*stride
                 vert_end = vert_start + fH
 
+                #Loop over horizontal axis
+                for w in range(n_W):
+
+                    hori_start = w*stride
+                    hori_end = hori_start + fW
+
+                    #For each filter
+                    for c in range(n_C_prev):
+
+                        #Slice current sample
+                        a_slice_prev = a_prev_pad[vert_start:vert_end,hori_start:hori_end,c]
+
+                        if mode == "MAX":
+                            
+                            Z[i,h,w,c] = np.max(a_slice_prev)
+
+                        elif mode == "AVERAGE":
+
+                            Z[i,h,w,c] = np.mean(a_slice_prev)
+
+
+        cachePL = (A_prev,stride,fH,fW)
+
+        return Z,cachePL
                 
 
 
