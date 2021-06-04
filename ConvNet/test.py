@@ -75,6 +75,21 @@ print("Z =", Z)
 """
 
 """
+#test conv backward
+np.random.seed(1)
+A_prev = np.random.randn(10,4,4,3)
+W = np.random.randn(2,2,3,8)
+b = np.random.randn(1,1,1,8)
+padH,padW,stride = 2,2,2
+Z, cache_conv = obj.conv_forward(A_prev, W, b, stride,padH,padW)
+
+dA, dW, db = obj.conv_backward(Z, cache_conv,lambda x:x)
+print("dA_mean =", np.mean(dA))
+print("dW_mean =", np.mean(dW))
+print("db_mean =", np.mean(db))
+"""
+
+"""
 #test max pooling
 #stride 1
 np.random.seed(1)

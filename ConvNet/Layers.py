@@ -127,10 +127,88 @@ class ConvLayer:
                          Z[i,h,w,c] =  self.conv_step_forward(a_slice_prev,Wc,bc)
 
 
-        cacheL = (A_prev,W,b,stride,(cpadH,cpadW))
+        cacheL = (A_prev,W,b,stride,cpadH,cpadW)
 
         return Z,cacheL
 
+
+    def conv_backward(self,dA,cacheL,dev2dZ):
+
+        """
+        dA -- numpy array of shape (m,n_H,n_W,n_C)
+        A_prev -- output activations of the previous layer, numpy array of shape (m, n_H_prev, n_W_prev, n_C_prev)
+        W -- Weights, numpy array of shape (fH, fW, n_C_prev, n_C)
+        cacheL -- (A_prev,W,b,stride,cpadH,cpadW)
+        dev2dZ -- function that calculate the derivative dZ
+        """
+
+        #Get informaton from cacheL
+        A_prev,W,b,stride,cpadH,cpadW = cacheL
+
+        #Get the shape of prev layer
+        m,n_H_prev,n_W_prev,n_C_prev = A_prev.shape
+
+        #Get the shape of current layer
+        _,n_H,n_W,n_C = dA.shape
+
+        #Get the shape of W
+        (fH, fW, n_C_prev, n_C) = W.shape
+
+        #Calculate dZ -- (m,n_H,n_W,n_C)
+        dZ = dev2dZ(dA)
+
+        #Initialize dA_prev,dW,db
+        dA_prev = np.zeros((m,n_H_prev,n_W_prev,n_C_prev))
+        dW =  np.zeros((fH,fW,n_C_prev,n_C))
+        db = np.zeros((1,1,1,n_C))
+
+        #Pad A_prev to original shape which is used in convolution -- (m,n_H_prev+2p,n_W_prev+2p,n_C_prev)
+        A_prev_pad = self.zero_padding(A_prev,cpadH,cpadW)
+
+        #Pad dA_prev for back propagation -- (m,n_H_prev+2p,n_W_prev+2p,n_C_prev) : (shape of A_prev_pad is used in convolution --> dA_prev_pad will have same shape as A_prev_pad and dA_prev will treated at the end to get correct derivative of dA_prev)
+        dA_prev_pad = self.zero_padding(dA_prev,cpadH,cpadW)
+
+        #Back Propagation
+        for i in range(m):
+
+            #Get the sample
+            a_prev_pad = A_prev_pad[i,:,:,:]
+
+            #Loop through each filter
+            for c in range(n_C):
+
+                #Loop through vertical axis
+                for h in range(n_H):
+
+                    vert_start = h*stride
+                    vert_end = vert_start + fH
+
+                    #Loop through horizontal axis
+                    for w in range(n_W):
+
+                        hori_start = w*stride
+                        hori_end = hori_start + fW
+
+                        #Get the slice from a_prev_pad
+                        a_slice_prev = a_prev_pad[vert_start:vert_end,hori_start:hori_end,:]
+
+                        #dA_prev_pad
+                        dA_prev_pad[i,vert_start:vert_end,hori_start:hori_end,:] += W[:,:,:,c]*dZ[i,h,w,c]
+
+                        #dW
+                        dW[:,:,:,c] += a_slice_prev*dZ[i,h,w,c]
+
+                        #db
+                        db[:,:,:,c] += dZ[i,h,w,c]
+  
+
+        dA_prev[:,:,:,:] = dA_prev_pad[:,cpadH:-cpadH,cpadW:-cpadW,:]
+
+        return dA_prev,dW,db
+        
+
+        
+        
 
 class PoolingLayer:
 
