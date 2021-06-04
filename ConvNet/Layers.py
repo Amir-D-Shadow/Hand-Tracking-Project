@@ -201,8 +201,23 @@ class ConvLayer:
                         #db
                         db[:,:,:,c] += dZ[i,h,w,c]
   
+ 
 
-        dA_prev[:,:,:,:] = dA_prev_pad[:,cpadH:-cpadH,cpadW:-cpadW,:]
+        if cpadH != 0 and cpadW != 0:
+
+            dA_prev[:,:,:,:] = dA_prev_pad[:,cpadH:-cpadH,cpadW:-cpadW,:]
+
+        elif cpadH != 0 and cpadW == 0:
+
+            dA_prev[:,:,:,:] = dA_prev_pad[:,cpadH:-cpadH,:,:]
+
+        elif cpadH == 0 and cpadW != 0:
+
+            dA_prev[:,:,:,:] = dA_prev_pad[:,:,cpadW:-cpadW,:]
+
+        else:
+
+            dA_prev[:,:,:,:] = dA_prev_pad[:,:,:,:]
 
         return dA_prev,dW,db
         
@@ -218,8 +233,20 @@ class PoolingLayer:
         self.fW = fW
         self.stride = stride
 
+        
+    def zero_padding(self,img,padH,padW):
 
-    def Pooling(self,A_prev,stride,fH,fW,mode="MAX",padding="Valid"):
+        """
+        img : numpy array of shape (m, n_H, n_W, n_C) representing a batch of m images
+        pad : amount of padding around each image on vertical and horizontal dimensions
+        """
+
+        img_pad = np.pad(img,((0,0),(padH,padH),(padW,padW),(0,0)),mode="constant",constant_values=(0,0))
+
+        return img_pad
+
+
+    def Pooling_Forward(self,A_prev,stride,fH,fW,mode="MAX",padding="Valid"):
 
         """
         A_prev -- output activations of the previous layer, numpy array of shape (m, n_H_prev, n_W_prev, n_C_prev)
@@ -243,6 +270,9 @@ class PoolingLayer:
             
             n_H = int((n_H_prev-fH)/stride)+1
             n_W = int((n_W_prev-fW)/stride)+1
+
+            padH = 0
+            padW = 0
 
         #Set up Z
         Z = np.zeros((m,n_H,n_W,n_C_prev))
@@ -280,11 +310,123 @@ class PoolingLayer:
                             Z[i,h,w,c] = np.mean(a_slice_prev)
 
 
-        cachePL = (A_prev,stride,fH,fW)
+        cachePL = (A_prev,stride,fH,fW,padH,padW)
 
         return Z,cachePL
-                
 
+
+    def Pooling_Backward(self,dA,cachePL,mode="MAX"):
+
+        """
+        dA -- gradient of cost with respect to the output of the pooling layer, same shape as A : (m,n_H,n_W,n_C)
+        A_prev -- (m, n_H_prev, n_W_prev, n_C_prev)
+        cachePL -- cache output from the forward pass of the pooling layer : (A_prev,stride,fH,fW,padH,padW)
+        mode -- the pooling mode you would like to use, defined as a string 
+    
+        """
+        A_prev,stride,fH,fW,padH,padW = cachePL
+        m, n_H_prev, n_W_prev, n_C_prev = A_prev.shape
+        _,n_H,n_W,n_C = dA.shape
+
+        #Initialize dA_prev
+        dA_prev = np.zeros((m,n_H_prev,n_W_prev,n_C_prev))
+
+        #Pad to get correct dimension
+        if padH != 0 or padW != 0:
+            
+            A_prev_pad = self.zero_padding(A_prev,padH,padW)
+            dA_prev_pad = self.zero_padding(dA_prev,padH,padW)
+
+        else:
+
+            A_prev_pad = A_prev.copy()
+            dA_prev_pad = dA_prev.copy()
+
+        #Loop through each example
+        for i in range(m):
+
+            a_prev_pad  = A_prev_pad[i,:,:,:]
+
+            #Loop through each filter
+            for c in range(n_C):
+
+                #Loop through vertical direction
+                for h in range(n_H):
+
+                    vert_start = h*stride
+                    vert_end = vert_start + fH
+
+                    #Loop through horizontal direction
+                    for w in range(n_W):
+
+                        hori_start = w*stride
+                        hori_end = hori_start + fW
+
+                        #Get a slice from a particular filter
+                        a_slice_prev = a_prev_pad[vert_start:vert_end,hori_start:hori_end,c]
+
+                        if mode == "MAX":
+
+                            dA_prev_pad[i,vert_start:vert_end,hori_start:hori_end,c] += self.MAX_POOLING_STEP_BACCKWARD(a_slice_prev)*dA[i,h,w,c]
+
+                        elif mode == "AVERAGE":
+
+                            dA_prev_pad[i,vert_start:vert_end,hori_start:hori_end,c] += self.AVG_POOLING_STEP_BACKWARD(dA[i,h,w,c],a_slice_prev)
+                            
+
+        if padH != 0 and padW != 0:
+
+            dA_prev = dA_prev[:,padH:-padH,padW:-padW,:]
+
+        elif padH != 0 and padW == 0:
+
+            dA_prev = dA_prev_pad[:,padH:-padH,:,:]
+
+        elif padH == 0 and padW != 0:
+
+            dA_prev = dA_prev_pad[:,:,padW:-padW,:]
+
+        else:
+
+            dA_prev[:,:,:,:] = dA_prev_pad[:,:,:,:]
+
+
+        return dA_prev
+
+            
+
+    def MAX_POOLING_STEP_BACCKWARD(self,A_slice_prev):
+
+        """
+        A_slice_prev -- (fH,fW)
+        """
+
+        #Bulid the mask
+        mask = (A_slice_prev == np.max(A_slice_prev)).astype(int)
+
+        return mask
+
+    def AVG_POOLING_STEP_BACKWARD(self,dAij,A_slice_prev):
+
+        """
+        A_slice_prev -- (fH,fW)
+        dAij -- scalar
+        """
+
+        #get shape
+        fH,fW = A_slice_prev.shape
+
+        #Calculate dA_slice_prev
+        dA_slice_prev = np.ones((fH,fW))
+        dA_slice_prev = dAij/(fH*fW)
+
+        return dA_slice_prev
+
+    
+
+        
+
+        
 
         
         

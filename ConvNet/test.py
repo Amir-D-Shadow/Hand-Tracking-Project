@@ -90,7 +90,7 @@ print("db_mean =", np.mean(db))
 """
 
 """
-#test max pooling
+#test pooling forward
 #stride 1
 np.random.seed(1)
 A_prev = np.random.randn(2, 5, 5, 3)
@@ -125,5 +125,27 @@ A, cache = obj.Pooling(A_prev, stride,fH,fW, mode = "AVERAGE")
 print("mode = average")
 print("A.shape = " + str(A.shape))
 print("A =\n", A)
+
+"""
+
+"""
+#test pooling backward
+obj = Layers.PoolingLayer()
+
+np.random.seed(1)
+A_prev = np.random.randn(5, 5, 3, 2)
+fH,fW,stride = 2,2,1
+A, cachePL = obj.Pooling_Forward(A_prev,stride,fH,fW)
+dA = np.random.randn(5, 4, 2, 2)
+
+dA_prev = obj.Pooling_Backward(dA, cachePL, mode = "MAX")
+print("mode = max")
+print('mean of dA = ', np.mean(dA))
+print('dA_prev[1,1] = ', dA_prev[1,1])  
+print()
+dA_prev = obj.Pooling_Backward(dA, cachePL, mode = "AVERAGE")
+print("mode = average")
+print('mean of dA = ', np.mean(dA))
+print('dA_prev[1,1] = ', dA_prev[1,1])
 
 """
