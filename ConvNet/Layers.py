@@ -432,15 +432,38 @@ class Dense_layer:
 
     def initialize_parameters(self,n_a,n_a_prev):
 
-
         parameters = {}
 
-        parameters["W"] = np.random.randn(layers[l],layers[l-1])*np.sqrt(2/(n_a+n_a_prev))
+        parameters["W"] = np.random.randn(n_a,n_a_prev)*np.sqrt(2/(n_a+n_a_prev))
         parameters["b"] = np.zeros((n_a,1))
 
         return parameters
 
+    def dense_forward(self,A_prev,parameters):
 
+        """
+        W: (n_a,n_a_prev)
+        b: (n_a,1)
+        """
+
+        W = parameters["W"]
+        b = parameters["b"]
+
+        Z = np.dot(W,A_prev)+b
+
+        cacheDL = (A_prev,W)
+
+        return Z,cacheDL
+
+    def dense_backward(self,dA,cacheDL):
+
+        A_prev,W= cacheDL
+
+        dW = np.dot(dA,A_prev.T)
+        db = np.sum(dA,axis=1,keepdims=True)
+        dA_prev = np.dot(W.T,dA)
+
+        return dW,db,dA_prev
 
 
 class Batch_Normalization_Layer:

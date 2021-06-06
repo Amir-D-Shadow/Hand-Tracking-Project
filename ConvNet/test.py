@@ -231,5 +231,47 @@ Z_C,cache= test_utils.batchnorm_forward(Z,gamma,beta,bn_param)
 dZ_C, dgamma_C, dbeta_C = test_utils.batchnorm_backward(dZ_S,cache)
 
 print(f"dZ_C shape:{dZ_C.shape},dgamma shape:{dgamma_C.shape},dbeta shape:{dbeta_C.shape}")
+"""
 
+"""
+#Test dense forward
+obj = Layers.Dense_layer()
+
+A = np.random.randn(4,5)
+parameters = obj.initialize_parameters(6,4)
+
+Z,cacheDL = obj.dense_forward(A,parameters)
+
+W = parameters["W"]
+b = parameters["b"]
+
+
+out, cache = test_utils.fc_forward(A,W,b)
+
+print(f"Z shape:{Z.shape}")
+print(f"out shape:{out.shape}")
+
+"""
+
+"""
+#Test dense backward
+obj = Layers.Dense_layer()
+
+A = np.random.randn(4,5)
+parameters = obj.initialize_parameters(6,4)
+
+Z,cacheDL = obj.dense_forward(A,parameters)
+
+dA = np.random.randn(6,5)
+
+dW,db,dA_prev = obj.dense_backward(dA,cacheDL)
+
+W = parameters["W"]
+b = parameters["b"]
+
+out, cache = test_utils.fc_forward(A,W,b)
+dX, dWL, dbL = test_utils.fc_backward(dA,cache)
+
+print(f"dW shape:{dW.shape},db shape:{db.shape},dA_prev shape:{dA_prev.shape}")
+print(f"dWL shape:{dWL.shape},dbL shape:{dbL.shape},dXshape:{dX.shape}")
 """

@@ -94,3 +94,16 @@ def batchnorm_backward(dout, cache):
 
     return dx, dgamma, dbeta
 
+def fc_forward(X, W, b):
+    out = np.dot(W,X) + b
+    cache = (W, X)
+    return out, cache
+
+def fc_backward(dout, cache):
+    W, h = cache
+
+    dW = np.dot(dout,h.T)
+    db = np.sum(dout, axis=1)
+    dX = np.dot(W.T,dout)
+
+    return dX, dW, db
