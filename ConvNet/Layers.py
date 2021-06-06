@@ -430,103 +430,18 @@ class PoolingLayer:
 
 class Dense_layer:
 
+    def initialize_parameters(self,n_a,n_a_prev):
 
-    def __init__(self,activation,backward_activation,layer_dims=[10,5]):
-
-        """
-        layer_dims : list -- indicating how many hidden units in each layer (**notice that layer_dims[0] is dimensions of input layer not hidden layer)
-        activation -- list -- a list containing functions (**notice that activation[0] is the activation function of first hidden layer)
-        backward_activation -- a list containing function that calcualte derivative of activation of corresponding layer 
-        """
-
-        self.layer_dims = layer_dims[:]
-        self.activation = activation[:]
-        self.backward_activation = backward_activation[:]
-
-
-    def initialize_parameters(self):
-
-        length = len(self.layer_dims)
 
         parameters = {}
 
-        for l in range(1,length):
-
-            para_W = "W" + str(l)
-            para_b = "b" + str(l)
-
-            parameters[para_W] = np.random.randn(layers[l],layers[l-1])*np.sqrt(2/())
-            parameters[para_b] = np.zeros((layers[l],1))
+        parameters["W"] = np.random.randn(layers[l],layers[l-1])*np.sqrt(2/(n_a+n_a_prev))
+        parameters["b"] = np.zeros((n_a,1))
 
         return parameters
 
 
-    def step_forward(self,a_prev,WL,bL,act_func_L):
 
-        z = np.dot(WL,a_prev)+bL
-        a_next = act_func_L(z)
-
-        cache_L = (a_next,a_prev,z,WL,bL)
-
-        return a_next,cache_L
-
-    def forward_propagation(self,a0,parameters):
-
-        length = len(self.layer_dims)
-
-        a_prev = a0
-
-        a = []
-        cache = []
-
-        for l in range(1,length):
-
-            a_prev,cache_L = self.step_forward(a_prev,parameters["W"+str(l)],parameters["b"+str(l)],self.activation[l-1])
-            
-            a.append(a_prev)
-            cache.append(cache_L)
-
-        return a,cache
-
-
-    def step_backward(self,da_next,backward_activation_L,cache_L):
-
-        """
-        cache_L: (a_next,a_prev,z,WL,bL)
-        """
-        a_next,a_prev,z,WL,bL = cache_L
-        m = a_prev.shape[1]
-        
-        dZ = backward_activation_L(z) * da_next
-        dW = np.dot(dZ,a_prev.T)/m
-        db = np.sum(dZ,axis=1,keepdims=True)/m
-        da_prev = np.dot(WL.T,dZ)
-
-        return da_prev,dW,db
-
-
-    def backward_propagation(self,dAL,cache):
-
-        length = len(self.layer_dims)
-        da_next = dAL
-
-        gradients = {}
-
-        for l in reversed(range(1,length)):
-
-            grad_W = "dW"+str(l)
-            grad_b = "db"+str(l)
-            grad_A = "dA"+str(l-1)
-
-            cache_L = cache[l-1]
-
-            da_next,dW,db = self.step_backward(da_next,self.backward_activation[l-1],cache_L)
-
-            gradients[grad_A] = da_next
-            gradients[grad_W] = dW
-            gradients[grad_b] = db
-
-        return gradients
 
 class Batch_Normalization_Layer:
 
@@ -545,7 +460,7 @@ class Batch_Normalization_Layer:
 
             factor += i
             gamma_shape.append(i)
-            beta_shape.append(1)
+            beta_shape.append(i)
 
         gamma = np.random.random_sample(tuple(gamma_shape))*np.sqrt(2/(factor))
 
