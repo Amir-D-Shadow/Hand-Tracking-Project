@@ -8,6 +8,10 @@ class ConvLayer:
         self.units = units
         self.padding = padding
 
+    def initialize_parameter(self,fH,fW,n_C_prev,n_C):
+
+        return np.random.randn(fH,fW,n_C_prev,n_C)*np.sqrt(2/(fH+fW))
+
 
     def zero_padding(self,img,padH,padW):
 
@@ -424,7 +428,215 @@ class PoolingLayer:
 
     
 
+class Dense_layer:
+
+
+    def __init__(self,activation,backward_activation,layer_dims=[10,5]):
+
+        """
+        layer_dims : list -- indicating how many hidden units in each layer (**notice that layer_dims[0] is dimensions of input layer not hidden layer)
+        activation -- list -- a list containing functions (**notice that activation[0] is the activation function of first hidden layer)
+        backward_activation -- a list containing function that calcualte derivative of activation of corresponding layer 
+        """
+
+        self.layer_dims = layer_dims[:]
+        self.activation = activation[:]
+        self.backward_activation = backward_activation[:]
+
+
+    def initialize_parameters(self):
+
+        length = len(self.layer_dims)
+
+        parameters = {}
+
+        for l in range(1,length):
+
+            para_W = "W" + str(l)
+            para_b = "b" + str(l)
+
+            parameters[para_W] = np.random.randn(layers[l],layers[l-1])*np.sqrt(2/())
+            parameters[para_b] = np.zeros((layers[l],1))
+
+        return parameters
+
+
+    def step_forward(self,a_prev,WL,bL,act_func_L):
+
+        z = np.dot(WL,a_prev)+bL
+        a_next = act_func_L(z)
+
+        cache_L = (a_next,a_prev,z,WL,bL)
+
+        return a_next,cache_L
+
+    def forward_propagation(self,a0,parameters):
+
+        length = len(self.layer_dims)
+
+        a_prev = a0
+
+        a = []
+        cache = []
+
+        for l in range(1,length):
+
+            a_prev,cache_L = self.step_forward(a_prev,parameters["W"+str(l)],parameters["b"+str(l)],self.activation[l-1])
+            
+            a.append(a_prev)
+            cache.append(cache_L)
+
+        return a,cache
+
+
+    def step_backward(self,da_next,backward_activation_L,cache_L):
+
+        """
+        cache_L: (a_next,a_prev,z,WL,bL)
+        """
+        a_next,a_prev,z,WL,bL = cache_L
+        m = a_prev.shape[1]
         
+        dZ = backward_activation_L(z) * da_next
+        dW = np.dot(dZ,a_prev.T)/m
+        db = np.sum(dZ,axis=1,keepdims=True)/m
+        da_prev = np.dot(WL.T,dZ)
+
+        return da_prev,dW,db
+
+
+    def backward_propagation(self,dAL,cache):
+
+        length = len(self.layer_dims)
+        da_next = dAL
+
+        gradients = {}
+
+        for l in reversed(range(1,length)):
+
+            grad_W = "dW"+str(l)
+            grad_b = "db"+str(l)
+            grad_A = "dA"+str(l-1)
+
+            cache_L = cache[l-1]
+
+            da_next,dW,db = self.step_backward(da_next,self.backward_activation[l-1],cache_L)
+
+            gradients[grad_A] = da_next
+            gradients[grad_W] = dW
+            gradients[grad_b] = db
+
+        return gradients
+
+class Batch_Normalization_Layer:
+
+    def initialize_parameter(self,shape,momentum=0.9):
+
+        """
+        first dimension represent number of examples
+        shape : tuple
+        """
+
+        factor = 0
+        beta_shape = []
+
+        for i in shape[1:]:
+
+            factor += i
+            beta_shape.append(1)
+
+        gamma = np.random.random_sample(shape[1:])*np.sqrt(2/(factor))
+
+        beta = np.random.random_sample(tuple(beta_shape))
+
+        running_para = {}
+        batch_para = {}
+
+        running_para["running_mean"] = 0
+        running_para["running_var"] = 0
+        running_para["momentum"] = momentum
+
+        batch_para["gamma"] = gamma
+        batch_para["beta"] = beta
+
+        return batch_para,running_para
+
+    def batch_forward(self,Z,batch_para,running_para,epsilon = 1e-10,mode="Train"):
+
+        """
+        first dimension represent number of examples
+        default mode is "Train"
+        """
+
+        #Set up
+        running_mean = running_para["running_mean"]
+        running_var = running_para["running_var"]
+        momentum = running_para["momentum"]
+
+        gamma = batch_para["gamma"]
+        beta = batch_para["beta"] 
+
+        if mode == "Train":
+
+            #calculate mean and variance
+            mean_mu = np.mean(Z,axis=0,keepdims=True)
+            var_sig = np.var(Z,axis=0,keepdims=True)
+
+            #update running mean and variance
+            running_para["running_mean"] = momentum*running_mean + (1-momentum)*mean_mu
+            running_para["running_var"] = momentum*running_var + (1-momentum)*var_sig
+
+            #calculate Z norm
+            Z_NORM = (Z-mean_mu)/np.sqrt(var_sig+epsilon)
+
+            #calculate output Z_S
+            Z_S = gamma*Z_NORM + beta
+
+            #save cache
+            cacheBL = (Z,Z_NORM,Z_S,gamma,beta,epsilon,mean_mu,var_sig)
+
+        else:
+
+            #calculate Z_norm
+            Z_NORM = (Z-running_mean)/np.sqrt(running_var+epsilon)
+
+            #calculate output Z_S
+            Z_S = gamma*Z_NORM + beta
+
+            cacheBL = ()
+            
+        
+        return Z_S,cacheBL
+    
+
+    def batch_backward(self,dZ_S,cacheBL):
+
+        """
+        first dimension represent number of examples
+        cacheBL contains (Z,Z_NORM,Z_S,gamma,beta,epsilon,mean_mu,var_sig)
+        """
+        Z,Z_NORM,Z_S,gamma,beta,epsilon,mean_mu,var_sig = cacheBL
+
+        m = Z.shape[0]
+
+        dZ_NORM = gamma*dZ_S
+        dvar_sig = (-(Z-mean_mu)*dZ_NORM/(2*((var_sig+epsilon)**(1.5)))).sum(axis=0,keepdims=True)
+        dmean_mu = (-dZ_NORM/np.sqrt(var_sig+epsilon)).sum(axis=0,keepdims=True)+dvar_sig*(-2/m)*(Z-mean_mu).sum(axis=0,keepdims=True)
+
+        #print(f"dvar:{dvar_sig} , dmean:{dmean_mu}")
+        dZ = dZ_NORM/np.sqrt(var_sig+epsilon)+dmean_mu/m+dvar_sig*2*(Z-mean_mu)/m
+        dgamma = (Z_NORM*dZ_S).sum(axis=0,keepdims=True)
+        dbeta = (dZ_S).sum(axis=0,keepdims=True)
+
+        #print(f"dZ_NORM:{dZ_NORM}")
+
+        return dZ,dgamma,dbeta
+
+        
+        
+        
+
+     
 
         
 
