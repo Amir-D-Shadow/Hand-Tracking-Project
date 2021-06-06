@@ -4,6 +4,7 @@ from matplotlib.image import imread
 import os
 import time
 import matplotlib.pyplot as plt
+import test_utils
 
 path = os.path.join(os.getcwd(),"Data","test.jpg")
 img = imread(path)
@@ -147,5 +148,88 @@ dA_prev = obj.Pooling_Backward(dA, cachePL, mode = "AVERAGE")
 print("mode = average")
 print('mean of dA = ', np.mean(dA))
 print('dA_prev[1,1] = ', dA_prev[1,1])
+
+"""
+
+"""
+#Test Batch Layer (Train)
+obj= Layers.Batch_Normalization_Layer()
+
+Z = np.random.randn(4,5)
+batch_para,running_para = obj.initialize_parameter(Z.shape)
+
+Z_S,cacheBL = obj.batch_forward(Z,batch_para,running_para)
+
+print("Z_S shape:{}".format(Z_S.shape))
+
+gamma = batch_para["gamma"]
+beta = batch_para["beta"]
+
+bn_param = {}
+bn_param['mode'] = "train"
+bn_param['eps'] = 1e-10
+bn_param['momentum']= 0.9
+
+Z_C,cache= test_utils.batchnorm_forward(Z,gamma,beta,bn_param)
+
+print("Z_C shape:{}".format(Z_C.shape))
+"""
+
+"""
+#Test Batch Layer (Test)
+obj= Layers.Batch_Normalization_Layer()
+Z = np.random.randn(4,5)
+batch_para,running_para = obj.initialize_parameter(Z.shape)
+
+running_para["running_mean"] = 0.1
+running_para["running_var"] = 0.1
+
+Z_S,cacheBL = obj.batch_forward(Z,batch_para,running_para,mode="Test")
+
+print("Z_S shape:{}".format(Z_S.shape))
+
+gamma = batch_para["gamma"]
+beta = batch_para["beta"]
+
+bn_param = {}
+bn_param['mode'] = "test"
+bn_param['eps'] = 1e-10
+bn_param['momentum']= 0.9
+bn_param['running_mean'] = 0.1
+bn_param['running_var'] = 0.1
+
+Z_C,cache= test_utils.batchnorm_forward(Z,gamma,beta,bn_param)
+
+print("Z_C shape:{}".format(Z_C.shape))
+"""
+
+"""
+#Test Batch Layer backward 
+obj= Layers.Batch_Normalization_Layer()
+
+Z = np.random.randn(4,5)
+dZ_S = np.random.randn(4,5)
+
+batch_para,running_para = obj.initialize_parameter(Z.shape)
+
+Z_S,cacheBL = obj.batch_forward(Z,batch_para,running_para)
+
+dZ,dgamma,dbeta = obj.batch_backward(dZ_S,cacheBL)
+
+print(f"dZ shape:{dZ.shape},dgamma shape:{dgamma.shape},dbeta shape:{dbeta.shape}")
+
+gamma = batch_para["gamma"]
+beta = batch_para["beta"]
+
+bn_param = {}
+bn_param['mode'] = "train"
+bn_param['eps'] = 1e-10
+bn_param['momentum']= 0.9
+
+Z_C,cache= test_utils.batchnorm_forward(Z,gamma,beta,bn_param)
+
+dZ_C, dgamma_C, dbeta_C = test_utils.batchnorm_backward(dZ_S,cache)
+
+print(f"dZ_C shape:{dZ_C.shape},dgamma shape:{dgamma_C.shape},dbeta shape:{dbeta_C.shape}")
 
 """
