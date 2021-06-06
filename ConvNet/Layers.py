@@ -538,14 +538,16 @@ class Batch_Normalization_Layer:
         """
 
         factor = 0
-        beta_shape = []
+        gamma_shape = [1]
+        beta_shape = [1]
 
         for i in shape[1:]:
 
             factor += i
+            gamma_shape.append(i)
             beta_shape.append(1)
 
-        gamma = np.random.random_sample(shape[1:])*np.sqrt(2/(factor))
+        gamma = np.random.random_sample(tuple(gamma_shape))*np.sqrt(2/(factor))
 
         beta = np.random.random_sample(tuple(beta_shape))
 
