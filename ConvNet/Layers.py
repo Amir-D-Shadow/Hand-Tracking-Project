@@ -421,8 +421,7 @@ class PoolingLayer:
         fH,fW = A_slice_prev.shape
 
         #Calculate dA_slice_prev
-        dA_slice_prev = np.ones((fH,fW))
-        dA_slice_prev = dAij/(fH*fW)
+        dA_slice_prev = np.ones((fH,fW))*dAij/(fH*fW)
 
         return dA_slice_prev
 
