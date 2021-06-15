@@ -1,34 +1,27 @@
 import numpy as np
 import math
-from numba import cuda
+from numba import cuda,float64,int64
 import time
+import Layers
 
-class ConvNet:
     
-    @cuda.jit
-    def conv_step_forward3D(W,img,b,Z,stride,xlim,ylim,zlim):
+@cuda.jit("float64[:,:,:,:],float64[:,:,:],float64[:,:,:,:],float64[:,:,:],int64,int64,int64,int64")
+def conv_step_forward3D(W,img,b,Z,stride,xlim,ylim,zlim):
 
-        """
-        W -- (fH,fW,n_C_prev,n_C)
-        img -- (n_H_prev,n_W_prev,n_C_prev)
-        Z -- (n_H,n_W,n_C)
-        """
+    """
+    W -- (fH,fW,n_C_prev,n_C)
+    img -- (n_H_prev,n_W_prev,n_C_prev)
+    Z -- (n_H,n_W,n_C)
+    """
 
-        fH,fW,n_C_prev,n_C = W.shape
-        
-        n_H = cuda.threadIdx.x + cuda.blockIdx.x*cuda.blockDim.x
-        n_W = cuda.threadIdx.y + cuda.blockIdx.y*cuda.blockDim.y
-        n_C = cuda.threadIdx.z + cuda.blockIdx.z*cuda.blockDim.z
+    fH,fW,n_C_prev,n_C = W.shape
+    n_H_prev,n_W_prev,n_C_prev = img.shape
+    
+    n_H = cuda.threadIdx.x + cuda.blockIdx.x*cuda.blockDim.x
+    n_W = cuda.threadIdx.y + cuda.blockIdx.y*cuda.blockDim.y
+    n_C = cuda.threadIdx.z + cuda.blockIdx.z*cuda.blockDim.z
 
-        if (n_H >= xlim) and (n_W >= ylim) and (n_C >= zlim):
-
-            return
-
-        W_filter = cuda.shared.array(W.shape)
-        IMG = cuda.shared.array(img.shape)
-
-        W_filter[:,:,:,:] = W[:,:,:,:]
-        IMG[:,:,:] = img[:,:,:]
+    if (n_H < xlim) and (n_W < ylim) and (n_C < zlim):
 
         #loop through filter
         for f in range(n_C):
@@ -45,27 +38,37 @@ class ConvNet:
                         IMG_H = n_H*stride+h
                         IMG_W = n_W*stride+w
 
-                        Z[n_H][n_W][n_C] += W_filter[h,w,c,f]*IMG[IMG_H,IMG_W,c]+float(b[0,0,0,f])
+                        Z[n_H,n_W,n_C] = Z[n_H][n_W][n_C] + W[h,w,c,f]*img[IMG_H,IMG_W,c]
 
-                    
-        cuda.syncthreads()
+            #wait until result come out
+            cuda.syncthreads()
+
+            #add bias
+            Z[n_H,n_W,n_C] = Z[n_H,n_W,n_C] + float(b[0,0,0,f])
+
+            #wait until result come out
+            cuda.syncthreads()
+    
 
 
 if __name__ == "__main__":
 
-    obj = ConvNet()
 
     #GPU
-    W = np.random.randn(5,5,3,16)
+    W = np.random.randn(3,3,3,16)
     b = np.random.randn(1,1,1,16)
-    Img = np.random.randn(1080,1920,3)
+    Img = np.random.randn(1,1080,1920,3)
+
+    m,n_H_prev,n_W_prev,n_C_prev = Img.shape
+
+    fH,fW = W.shape[0],W.shape[1]
     
-    stride = 3
-    n_H = int((1080-5)/stride)+1
-    n_W = int((1920-5)/stride)+1
-    n_C = 3
+    stride = 2
+    n_H = int((n_H_prev-fH)/stride)+1
+    n_W = int((n_W_prev-fW)/stride)+1
+    n_C = 16
     
-    Z = np.random.randn(n_H,n_W,16)
+    Z = np.zeros((n_H,n_W,16))
     
     threadsperblock = (8,8,2)
 
@@ -73,13 +76,34 @@ if __name__ == "__main__":
     blockspergrid_W = int(math.ceil(Z.shape[1]/threadsperblock[1]))
     blockspergrid_C = int(math.ceil(Z.shape[2]/threadsperblock[2]))
 
+    blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
+
+    
     W_device = cuda.to_device(W)
-    Img_device = cuda.to_device(Img)
+    Img_device = cuda.to_device(Img[0,:,:,:])
     Z_device = cuda.to_device(Z)
+    b_device = cuda.to_device(b)
+    
+    """
+    W_device = cuda.device_array_like(W)
+    Img_device = cuda.device_array_like(Img[0,:,:,:])
+    Z_device = cuda.device_array_like(Z)
+    b_device = cuda.device_array_like(b)
+    """
+    cuda.synchronize()
     
     gpu_time = time.time()
-    obj.conv_step_forward3D(W,img)
+    conv_step_forward3D[blockspergrid,threadsperblock](W_device,Img_device,b_device,Z_device,stride,n_H,n_W,n_C)
+    cuda.synchronize()
+    k1 = Z_device.copy_to_host()
     print(f"With GPU:{time.time()-gpu_time}")
     
 
-    
+    #CPU
+    obj = Layers.ConvLayer()
+    cpu_time = time.time()
+    Z,_= obj.conv_forward(Img,W,b,stride)            
+    k2 = Z[0,:,:,:]
+    print(f"With CPU:{time.time()-cpu_time}")
+
+    print(np.array_equal(k1,k2))
