@@ -90,12 +90,12 @@ def conv_step_forward2D(W,img,b,Z,stride,xlim,ylim,zlim):
 
 if __name__ == "__main__":
 
-    """
+ 
     #3D
     #GPU
-    W = np.random.randn(3,3,3,16)
-    b = np.random.randn(1,1,1,16)
-    Img = np.random.randn(1,1080,1920,3)
+    W = np.random.randn(3,3,3,16).astype(np.float64)
+    b = np.random.randn(1,1,1,16).astype(np.float64)
+    Img = np.random.randn(1,1080,1920,3).astype(np.float64)
 
     m,n_H_prev,n_W_prev,n_C_prev = Img.shape
 
@@ -144,14 +144,17 @@ if __name__ == "__main__":
     k2 = Z[0,:,:,:]
     print(f"With CPU:{time.time()-cpu_time}")
 
-    print(np.array_equal(k1,k2))
+    print(np.array_equal(k1.round(6),k2.round(6)))
+ 
     """
-
     #2D
     #GPU
-    W = np.random.randn(3,3,16)
-    b = np.random.randn(1,1,16)
-    Img = np.random.randn(1080,1920)
+    W = np.random.randn(3,3,16).astype(np.float64)
+    b = np.random.randn(1,1,16).astype(np.float64)
+    Img = np.random.randn(1080,1920).astype(np.float64)
+    #W = np.ones((2,2,16))
+    #b = np.ones((1,1,16))
+    #Img = np.ones((108,192))
 
     n_H_prev,n_W_prev = Img.shape
 
@@ -160,9 +163,9 @@ if __name__ == "__main__":
     stride = 2
     n_H = int((n_H_prev-fH)/stride)+1
     n_W = int((n_W_prev-fW)/stride)+1
-    n_C = 16
+    n_C = 1
     
-    Z = np.zeros((n_H,n_W,16))
+    Z = np.zeros((n_H,n_W,n_C))
     
     threadsperblock = (8,8,2)
 
@@ -178,12 +181,6 @@ if __name__ == "__main__":
     Z_device = cuda.to_device(Z)
     b_device = cuda.to_device(b)
     
-    """
-    #W_device = cuda.device_array_like(W)
-    #Img_device = cuda.device_array_like(Img[0,:,:,:])
-    #Z_device = cuda.device_array_like(Z)
-    #b_device = cuda.device_array_like(b)
-    """
     cuda.synchronize()
     
     gpu_time = time.time()
@@ -192,4 +189,41 @@ if __name__ == "__main__":
     k1 = Z_device.copy_to_host()
     print(f"With GPU:{time.time()-gpu_time}")
 
+    #CPU
+    obj = Layers.ConvLayer()
+    cpu_time = time.time()
+    #Get a sample
+    #W = np.ones((2,2,1))
+    #b = np.ones((1,1,1))
+    a_prev_pad = Img.copy()
+    Z = np.zeros((n_H,n_W,n_C))
+
+    #Loop over vertical axis 
+    for h in range(n_H):
+
+         vert_start = h*stride
+         vert_end = vert_start + fH
+        
+         #Loop over horizontal axis
+         for w in range(n_W):
+
+             hori_start = w*stride
+             hori_end = hori_start + fW
+
+             #Slice current sample
+             a_slice_prev = a_prev_pad[vert_start:vert_end,hori_start:hori_end]
+
+             #For each filter
+             for c in range(n_C):
+
+                 Wc = W[:,:,c]
+                 bc = b[:,:,c]
+                    
+                 Z[h,w,c] =  np.sum(a_slice_prev*Wc)+float(bc)
+                 
+    k2 = Z.copy()
+    print(f"With CPU:{time.time()-cpu_time}")
+
+    print(np.array_equal(k1.round(6),k2.round(6)))
+    """
     
