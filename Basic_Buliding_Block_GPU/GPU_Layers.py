@@ -90,7 +90,7 @@ def conv_step_forward2D(W,img,b,Z,stride,xlim,ylim,zlim):
 
 if __name__ == "__main__":
 
- 
+    #Test
     #3D
     #GPU
     W = np.random.randn(3,3,3,16).astype(np.float64)
