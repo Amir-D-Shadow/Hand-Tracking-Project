@@ -1,9 +1,9 @@
 import numpy as np
 import math
 import time
-from numba import jit,cuda
+from numba import jit,cuda,float64,int64
 
-@cuda.jit
+@cuda.jit("float64[:,:,:],float64[:,:,:],int64,int64,int64")
 def mult3D(arr1,arr2,xlim,ylim,zlim):
 
     x = cuda.threadIdx.x + cuda.blockIdx.x*cuda.blockDim.x
@@ -14,7 +14,7 @@ def mult3D(arr1,arr2,xlim,ylim,zlim):
 
         arr1[x][y][z] = arr1[x][y][z]*arr2[x][y][z]
 
-@cuda.jit
+@cuda.jit("float64[:,:],float64[:,:],int64,int64")
 def mult2D(arr1,arr2,xlim,ylim):
 
     x = cuda.threadIdx.x + cuda.blockIdx.x*cuda.blockDim.x
@@ -24,7 +24,7 @@ def mult2D(arr1,arr2,xlim,ylim):
 
         arr1[x][y] = arr1[x][y]*arr2[x][y]
 
-@cuda.jit
+@cuda.jit("float64[:],float64[:],int64")
 def mult1D(arr1,arr2,xlim):
 
     x = cuda.threadIdx.x + cuda.blockDim.x*cuda.blockIdx.x
@@ -119,9 +119,11 @@ if __name__ == "__main__":
 
     """
     #mult
-    arr1 = np.random.randn(1080,1920,3)
-    arr2 = np.random.randn(1080,1920,3)
-
+    arr1 = np.random.randn(10,1080,1920,3)
+    arr2 = np.random.randn(10,1080,1920,3)
+    """
+    
+    """
     #4D
     #cpu
     k1 = np.zeros_like(arr1)
@@ -142,7 +144,9 @@ if __name__ == "__main__":
     print(f"gpu: {time.time()-gpu_time}")
 
     print(np.array_equal(k1,k2))
+
     """
+  
     """
     #3D
     #cpu
