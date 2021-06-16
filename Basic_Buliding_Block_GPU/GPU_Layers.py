@@ -23,31 +23,28 @@ def conv_step_forward3D(W,img,b,Z,stride,xlim,ylim,zlim):
 
     if (n_H < xlim) and (n_W < ylim) and (n_C < zlim):
 
-        #loop through filter
-        for f in range(n_C):
+        #loop through height
+        for h in range(fH):
 
-            #loop through height
-            for h in range(fH):
+            #loop through width
+            for w in range(fW):
 
-                #loop through width
-                for w in range(fW):
+                #loop through channels
+                for c in range(n_C_prev):
 
-                    #loop through channels
-                    for c in range(n_C_prev):
+                    IMG_H = n_H*stride+h
+                    IMG_W = n_W*stride+w
 
-                        IMG_H = n_H*stride+h
-                        IMG_W = n_W*stride+w
+                    Z[n_H,n_W,n_C] = Z[n_H,n_W,n_C] + W[h,w,c,n_C]*img[IMG_H,IMG_W,c]
 
-                        Z[n_H,n_W,n_C] = Z[n_H][n_W][n_C] + W[h,w,c,f]*img[IMG_H,IMG_W,c]
+        #wait until result come out
+        cuda.syncthreads()
 
-            #wait until result come out
-            cuda.syncthreads()
+        #add bias
+        Z[n_H,n_W,n_C] = Z[n_H,n_W,n_C] + float(b[0,0,0,n_C])
 
-            #add bias
-            Z[n_H,n_W,n_C] = Z[n_H,n_W,n_C] + float(b[0,0,0,f])
-
-            #wait until result come out
-            cuda.syncthreads()
+        #wait until result come out
+        cuda.syncthreads()
     
 
 
