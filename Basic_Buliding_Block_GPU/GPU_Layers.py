@@ -49,7 +49,7 @@ def conv_step_forward3D(W,img,b,Z,stride,xlim,ylim,zlim):
 
 
 @cuda.jit("float64[:,:,:],float64[:,:],float64[:,:,:],float64[:,:,:],int64,int64,int64,int64")
-def conv_step_forward3D(W,img,b,Z,stride,xlim,ylim,zlim):
+def conv_step_forward2D(W,img,b,Z,stride,xlim,ylim,zlim):
 
     """
     W -- (fH,fW,n_C)
