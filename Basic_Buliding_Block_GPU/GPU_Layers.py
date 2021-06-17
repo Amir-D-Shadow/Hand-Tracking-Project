@@ -4,18 +4,66 @@ from numba import cuda,float64,int64
 import time
 import Layers
 
+@cuda.jit
+def conv_step_forward4D(W,img,b,Z,stride,xlim,ylim,zlim):
+    
+    """
+    W -- (fH,fW,n_C_prev,Channels)
+    img -- (m,n_H_prev,n_W_prev,n_C_prev)
+    b -- (1,1,1,Channels)
+    Z -- (m,n_H,n_W,Channels)
+    """
+    fH,fW,n_C_prev,_ = W.shape
+    m,n_H_prev,n_W_prev,n_C_prev = img.shape
+
+    n_H = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
+    n_W = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
+    n_C = cuda.threadIdx.z + cuda.blockIdx.z * cuda.blockIdx.z
+
+    if (n_H < xlim) and (n_W < ylim) and (n_C < zlim):
+
+        #Loop through each example
+        for i in range(m):
+
+            #Sum over volume
+
+            #Loop through vertical axis
+            for h in range(fH):
+
+                #Loop through horizontal axis
+                for w in range(fW):
+
+                    #Loop through Channels (prev)
+                    for c in range(n_C_prev):
+
+                        IMG_H = n_H * stride + h
+                        IMG_W = n_W * stride + w
+
+                        Z[i,n_H,n_W,n_C] = Z[i,n_H,n_W,n_C] + W[h,w,c,n_C]*img[i,IMG_H,IMG_W,c]
+
+            #Wait results
+            cuda.syncthreads()
+
+            #add bias
+            Z[i,n_H,n_W,n_C] = Z[i,n_H,n_W,n_C] + float(b[0,0,0,n_C])
+
+            #Wait results
+            cuda.syncthreads()
+
+                        
+    
     
 @cuda.jit("float64[:,:,:,:],float64[:,:,:],float64[:,:,:,:],float64[:,:,:],int64,int64,int64,int64")
 def conv_step_forward3D(W,img,b,Z,stride,xlim,ylim,zlim):
 
     """
-    W -- (fH,fW,n_C_prev,n_C)
+    W -- (fH,fW,n_C_prev,Channels)
     img -- (n_H_prev,n_W_prev,n_C_prev)
-    b -- (1,1,1,n_C)
-    Z -- (n_H,n_W,n_C)
+    b -- (1,1,1,Channels)
+    Z -- (n_H,n_W,Channels)
     """
 
-    fH,fW,n_C_prev,n_C = W.shape
+    fH,fW,n_C_prev,_ = W.shape
     n_H_prev,n_W_prev,n_C_prev = img.shape
     
     n_H = cuda.threadIdx.x + cuda.blockIdx.x*cuda.blockDim.x
@@ -52,13 +100,13 @@ def conv_step_forward3D(W,img,b,Z,stride,xlim,ylim,zlim):
 def conv_step_forward2D(W,img,b,Z,stride,xlim,ylim,zlim):
 
     """
-    W -- (fH,fW,n_C)
+    W -- (fH,fW,Channels)
     img -- (n_H_prev,n_W_prev)
-    b -- (1,1,n_C)
-    Z -- (n_H,n_W,n_C)
+    b -- (1,1,Channels)
+    Z -- (n_H,n_W,Channels)
     """
 
-    fH,fW,n_C = W.shape
+    fH,fW,_ = W.shape
     n_H_prev,n_W_prev = img.shape
     
     n_H = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
@@ -87,10 +135,45 @@ def conv_step_forward2D(W,img,b,Z,stride,xlim,ylim,zlim):
         #wait result
         cuda.syncthreads()
 
+@cuda.jit("float64[:,:],float64[:,:],float64[:,:],float64[:,:],int64,int64,int64")
+def conv_step_forward1D(W,img,b,Z,stride,xlim,ylim):
+
+    """
+    W -- (fH,Channels)
+    img -- (n_H_prev,1)
+    b -- (1,Channels)
+    Z -- (n_H,Channels)
+    """
+
+    fH,_ = W.shape
+    n_H = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
+    n_C = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
+
+    if (n_H < xlim) and (n_C < ylim):
+
+        for h in range(fH):
+
+            IMG_H = n_H*stride + h
+
+            Z[n_H,n_C] = Z[n_H,n_C] + W[h,n_C] * img[IMG_H]
+
+        cuda.sycthreads()
+
+        Z[n_H,n_C] = Z[n_H,n_C] + float(b[0,n_C])
+
+        cuda.sycthread()
+
+        
+
 
 if __name__ == "__main__":
 
     #Test
+
+    #4D
+    #GPU
+
+    """
     #3D
     #GPU
     W = np.random.randn(3,3,3,16).astype(np.float64)
@@ -145,7 +228,8 @@ if __name__ == "__main__":
     print(f"With CPU:{time.time()-cpu_time}")
 
     print(np.array_equal(k1.round(6),k2.round(6)))
- 
+    """
+    
     """
     #2D
     #GPU
