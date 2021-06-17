@@ -1,11 +1,116 @@
 import numpy as np
 import math
-from numba import cuda,float64,int64
+from numba import jit,cuda,float64,int64
 import time
-import Layers
+
+#Padding
+def zero_padding(img,padH,padW):
+
+        """
+        img : numpy array of shape (m, n_H, n_W, n_C) representing a batch of m images
+        pad : amount of padding around each image on vertical and horizontal dimensions
+        """
+
+        return np.pad(img,((0,0),(padH,padH),(padW,padW),(0,0)),mode="constant",constant_values=(0,0))
+
+def same_padding(img,stride,fH,fW):
+    
+    """
+    img : numpy array of shape (m, n_H, n_W, n_C) representing a batch of m images
+    fH -- Kernel Size (height)
+    fW -- Kernel Size (width)
+    s -- Stride
+    """
+    n_H, n_W = img.shape[1],img.shape[2]
+    padH = int(math.ceil(((n_H-1)*stride+fH-n_H)/2))
+    padW = int(math.ceil(((n_W-1)*stride+fW-n_W)/2))
+
+    img_same_pad = zero_padding(img,padH,padW)
+
+    return img_same_pad,padH,padW
+
+#Initialization
+@jit(nopython=True)
+def initialization_parameters(fH,fW,n_C_prev,n_C):
+
+    W = (np.random.randn(fH,fW,n_C_prev,n_C).astype(np.float64))*np.sqrt(2/(n_C_prev+n_C))
+    b = np.random.randn(1,1,1,n_C)
+
+    return W,b
+
+#Convolution Forward
+def Conv_Forward3D_GPU(A_prev,W,b,stride,padH=0,padW=0,padding="Valid",threadsperblock=(8,8,2)):
+
+    """
+    A_prev -- (m, n_H_prev, n_W_prev, n_C_prev) 
+    W -- (fH, fW, n_C_prev, n_C) 
+    b -- (1, 1, 1, n_C)
+    f -- kernel size
+    """
+
+    m, n_H_prev, n_W_prev, n_C_prev = A_prev.shape
+    fH, fW, n_C_prev, n_C = W.shape
+
+    #Padding
+    if padding == "Same":
+        
+        A_prev_pad,opadH,opadW = same_padding(A_prev,stride,fH,fW)
+
+        n_H = n_H_prev
+        n_W = n_W_prev
+
+    elif padH != 0 or padW != 0:
+
+        A_prev_pad = zero_padding(A_prev,padH,padW)
+
+        n_H = int((n_H_prev+2*padH-fH)/stride)+1
+        n_W = int((n_W_prev+2*padW-fW)/stride)+1
+        opadH = padH
+        opadW = padW
+
+    else:
+
+        A_prev_pad = A_prev.copy()
+
+        n_H = int((n_H_prev-fH)/stride)+1
+        n_W = int((n_W_prev-fW)/stride)+1
+        opadH = 0
+        opadW = 0
+
+    #Set up
+    shape_size = len(A_prev_pad.shape)
+    Z = np.zeros((m,n_H,n_W,n_C))
+
+    #Move memory to GPU
+    A_prev_pad_device = cuda.to_device(A_prev_pad)
+    W_device = cuda.to_device(W)
+    b_device = cuda.to_device(b)
+    Z_device = cuda.to_device(Z)
+
+    #define blocks
+    blockspergrid_H = int(math.ceil(n_H/threadsperblock[0]))
+    blockspergrid_W = int(math.ceil(n_W/threadsperblock[1]))
+    blockspergrid_C = int(math.ceil(n_C/threadsperblock[2]))
+
+    blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
+    cuda.synchronize()
+
+    #convolution
+    conv_step_forward3D_with_sample[blockspergrid,threadsperblock](W_device,A_prev_pad_device,b_device,Z_device,stride,n_H,n_W,n_C)
+    cuda.synchronize()
+
+    #GET RESULT
+    Z = Z_device.copy_to_host()
+
+    #Save cache for back propagation
+    cacheL = (A_prev,W,b,stride,opadH,opadW)
+    cuda.synchronize()
+
+    return Z,cacheL
+
 
 @cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64,int64")
-def conv_step_forward4D(W,img,b,Z,stride,xlim,ylim,zlim):
+def conv_step_forward3D_with_sample(W,img,b,Z,stride,Hlim,Wlim,Clim):
     
     """
     W -- (fH,fW,n_C_prev,Channels)
@@ -20,7 +125,7 @@ def conv_step_forward4D(W,img,b,Z,stride,xlim,ylim,zlim):
     n_W = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
     n_C = cuda.threadIdx.z + cuda.blockIdx.z * cuda.blockIdx.z
 
-    if (n_H < xlim) and (n_W < ylim) and (n_C < zlim):
+    if (n_H < Hlim) and (n_W < Wlim) and (n_C < Clim):
 
         #Loop through each example
         for i in range(m):
@@ -54,7 +159,7 @@ def conv_step_forward4D(W,img,b,Z,stride,xlim,ylim,zlim):
     
     
 @cuda.jit("float64[:,:,:,:],float64[:,:,:],float64[:,:,:,:],float64[:,:,:],int64,int64,int64,int64")
-def conv_step_forward3D(W,img,b,Z,stride,xlim,ylim,zlim):
+def conv_step_forward3D(W,img,b,Z,stride,Hlim,Wlim,Clim):
 
     """
     W -- (fH,fW,n_C_prev,Channels)
@@ -70,7 +175,7 @@ def conv_step_forward3D(W,img,b,Z,stride,xlim,ylim,zlim):
     n_W = cuda.threadIdx.y + cuda.blockIdx.y*cuda.blockDim.y
     n_C = cuda.threadIdx.z + cuda.blockIdx.z*cuda.blockDim.z
 
-    if (n_H < xlim) and (n_W < ylim) and (n_C < zlim):
+    if (n_H < Hlim) and (n_W < Wlim) and (n_C < Clim):
 
         #loop through height
         for h in range(fH):
@@ -97,7 +202,7 @@ def conv_step_forward3D(W,img,b,Z,stride,xlim,ylim,zlim):
 
 
 @cuda.jit("float64[:,:,:],float64[:,:],float64[:,:,:],float64[:,:,:],int64,int64,int64,int64")
-def conv_step_forward2D(W,img,b,Z,stride,xlim,ylim,zlim):
+def conv_step_forward2D(W,img,b,Z,stride,Hlim,Wlim,Clim):
 
     """
     W -- (fH,fW,Channels)
@@ -113,7 +218,7 @@ def conv_step_forward2D(W,img,b,Z,stride,xlim,ylim,zlim):
     n_W = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
     n_C = cuda.threadIdx.z + cuda.blockIdx.z * cuda.blockDim.z
 
-    if (n_H < xlim) and (n_W < ylim) and (n_C < zlim):
+    if (n_H < Hlim) and (n_W < Wlim) and (n_C < Clim):
 
         #loop through height
         for h in range(fH):
@@ -136,7 +241,7 @@ def conv_step_forward2D(W,img,b,Z,stride,xlim,ylim,zlim):
         cuda.syncthreads()
 
 @cuda.jit("float64[:,:],float64[:,:],float64[:,:],float64[:,:],int64,int64,int64")
-def conv_step_forward1D(W,img,b,Z,stride,xlim,ylim):
+def conv_step_forward1D(W,img,b,Z,stride,Hlim,Clim):
 
     """
     W -- (fH,Channels)
@@ -149,7 +254,7 @@ def conv_step_forward1D(W,img,b,Z,stride,xlim,ylim):
     n_H = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
     n_C = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
 
-    if (n_H < xlim) and (n_C < ylim):
+    if (n_H < Hlim) and (n_C < Clim):
 
         for h in range(fH):
 
@@ -169,7 +274,7 @@ def conv_step_forward1D(W,img,b,Z,stride,xlim,ylim):
 if __name__ == "__main__":
 
     #Test
-
+    import Layers
     #4D
     #GPU
     W = np.random.randn(3,3,3,16).astype(np.float64)
@@ -199,8 +304,9 @@ if __name__ == "__main__":
     img_device = cuda.to_device(img)
     b_device = cuda.to_device(b)
     Z_device = cuda.to_device(Z)
+    cuda.synchronize()
 
-    conv_step_forward4D[blockspergrid,threadsperblock](W_device,img_device,b_device,Z_device,stride,n_H,n_W,n_C)
+    conv_step_forward3D_with_sample[blockspergrid,threadsperblock](W_device,img_device,b_device,Z_device,stride,n_H,n_W,n_C)
 
     cuda.synchronize()
     k1 = Z_device.copy_to_host()
@@ -251,12 +357,6 @@ if __name__ == "__main__":
     Z_device = cuda.to_device(Z)
     b_device = cuda.to_device(b)
     
-    """
-    #W_device = cuda.device_array_like(W)
-    #Img_device = cuda.device_array_like(Img[0,:,:,:])
-    #Z_device = cuda.device_array_like(Z)
-    #b_device = cuda.device_array_like(b)
-    """
     cuda.synchronize()
     
     gpu_time = time.time()
