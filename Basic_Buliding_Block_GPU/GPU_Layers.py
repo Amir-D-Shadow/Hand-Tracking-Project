@@ -39,7 +39,7 @@ def initialization_parameters(fH,fW,n_C_prev,n_C):
     return W,b
 
 #Convolution Forward
-def Conv_Forward3D_GPU(A_prev,W,b,stride,padH=0,padW=0,padding="Valid",threadsperblock=(8,8,2)):
+def Conv_Forward3D_GPU(A_prev,W,b,stride,padH=0,padW=0,padding="Valid",threadsperblock=(4,4,16)):
 
     """
     A_prev -- (m, n_H_prev, n_W_prev, n_C_prev) 
@@ -83,24 +83,44 @@ def Conv_Forward3D_GPU(A_prev,W,b,stride,padH=0,padW=0,padding="Valid",threadspe
 
     #Move memory to GPU
     A_prev_pad_device = cuda.to_device(A_prev_pad)
-    W_device = cuda.to_device(W)
-    b_device = cuda.to_device(b)
-    Z_device = cuda.to_device(Z)
+    #W_device = cuda.to_device(W)
+    #b_device = cuda.to_device(b)
+    #Z_device = cuda.to_device(Z)
 
-    #define blocks
+    #Create stream
+    segment_size = threadsperblock[-1]
+    number_of_streams = int(math.ceil(n_C/segment_size))
+
+    stream_list = []
+    for i in range(number_of_streams):
+
+            stream_list.append(cuda.stream())
+
+    #define blocks for H and W
     blockspergrid_H = int(math.ceil(n_H/threadsperblock[0]))
     blockspergrid_W = int(math.ceil(n_W/threadsperblock[1]))
-    blockspergrid_C = int(math.ceil(n_C/threadsperblock[2]))
+    blockspergrid_C = int(math.ceil(segment_size/threadsperblock[2]))
 
     blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
-    cuda.synchronize()
-
+    #cuda.synchronize()
+    
     #convolution
-    conv_step_forward3D_with_sample[blockspergrid,threadsperblock](W_device,A_prev_pad_device,b_device,Z_device,stride,n_H,n_W,n_C)
-    cuda.synchronize()
+    for s in range(number_of_streams):
 
-    #GET RESULT
-    Z = Z_device.copy_to_host()
+            #Move memory to GPU
+            W_i = (W[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
+            W_device = cuda.to_device(W_i,stream = stream_list[s])
+            b_i = (b[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
+            b_device = cuda.to_device(b_i,stream = stream_list[s])
+            Z_i = (Z[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
+            Z_device = cuda.to_device(Z_i,stream = stream_list[s])
+            
+            #calculation
+            conv_step_forward3D_with_sample[blockspergrid,threadsperblock,stream_list[s]](W_device,A_prev_pad_device,b_device,Z_device,stride,n_H,n_W,n_C)
+            cuda.synchronize()
+
+            #GET RESULT
+            Z[:,:,:,(s*segment_size):((s+1)*segment_size)] = Z_device.copy_to_host(stream = stream_list[i])
 
     #Save cache for back propagation
     cacheL = (A_prev,W,b,stride,opadH,opadW)
@@ -240,34 +260,6 @@ def conv_step_forward2D(W,img,b,Z,stride,Hlim,Wlim,Clim):
         #wait result
         cuda.syncthreads()
 
-@cuda.jit("float64[:,:],float64[:,:],float64[:,:],float64[:,:],int64,int64,int64")
-def conv_step_forward1D(W,img,b,Z,stride,Hlim,Clim):
-
-    """
-    W -- (fH,Channels)
-    img -- (n_H_prev,1)
-    b -- (1,Channels)
-    Z -- (n_H,Channels)
-    """
-
-    fH,_ = W.shape
-    n_H = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
-    n_C = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
-
-    if (n_H < Hlim) and (n_C < Clim):
-
-        for h in range(fH):
-
-            IMG_H = n_H*stride + h
-
-            Z[n_H,n_C] = Z[n_H,n_C] + W[h,n_C] * img[IMG_H]
-
-        cuda.sycthreads()
-
-        Z[n_H,n_C] = Z[n_H,n_C] + float(b[0,n_C])
-
-        cuda.sycthread()
-
         
 
 
@@ -275,24 +267,48 @@ if __name__ == "__main__":
 
     #Test
     import Layers
-    #4D
+ 
+    #conv main function
+    #GPU
+    W = np.random.randn(3,3,3,512).astype(np.float64)
+    b = np.random.randn(1,1,1,512).astype(np.float64)
+    img = np.random.randn(5,1080,1920,3)
+    stride = 2
+    gpu_time = time.time()
+    Z,_ = Conv_Forward3D_GPU(img,W,b,stride)
+    cuda.synchronize()
+    print(f"With GPU:{time.time()-gpu_time}")
+    k1 = Z.copy()
+
+    #CPU
+    obj = Layers.ConvLayer()
+    cpu_time = time.time()
+    Z,_= obj.conv_forward(img,W,b,stride)
+    print(f"With CPU:{time.time()-cpu_time}")
+    k2 = Z.copy()
+
+    print(np.array_equal(k1.round(6),k2.round(6)))
+    print(np.allclose(k1,k2))
+
+    """
+    #3D with sample
     #GPU
     W = np.random.randn(3,3,3,16).astype(np.float64)
     b = np.random.randn(1,1,1,16).astype(np.float64)
-    img = np.random.randn(2,1080,1920,3)
+    img = np.random.randn(3,1080,1920,3)
 
     fH,fW,n_C_prev,n_C = W.shape
-    m,n_H_prev,n_W_prev,n_C_prev = img.shape[1],img.shape[2]
+    m,n_H_prev,n_W_prev,n_C_prev = img.shape
     stride = 2
 
     n_H = int((n_H_prev-fH)/stride)+1
     n_W = int((n_W_prev-fW)/stride)+1
 
-    Z = np.zeros(m,n_H,n_W,n_C)
+    Z = np.zeros((m,n_H,n_W,n_C))
 
     gpu_time = time.time()
 
-    threadsperblock = (8,8,2)
+    threadsperblock = (4,4,16)
 
     blockspergrid_H = int(math.ceil(n_H/threadsperblock[0]))
     blockspergrid_W = int(math.ceil(n_W/threadsperblock[1]))
@@ -323,7 +339,8 @@ if __name__ == "__main__":
 
     print(np.array_equal(k1.round(6),k2.round(6)))
     print(np.allclose(k1,k2))
-     
+    """
+
 
     """
     #3D
