@@ -34,9 +34,11 @@ def same_padding(img,stride,fH,fW):
 def initialization_parameters(fH,fW,n_C_prev,n_C):
 
         W = (np.random.randn(fH,fW,n_C_prev,n_C).astype(np.float64))*np.sqrt(2/(n_C_prev+n_C))
-        b = np.random.randn(1,1,1,n_C)
+        b = (np.random.randn(1,1,1,n_C))
 
         return W,b
+
+#ConvLayer
 
 #Convolution Forward
 def Conv_Forward3D_GPU(A_prev,W,b,stride,padH=0,padW=0,padding="Valid",threadsperblock=(4,4,32)):
@@ -78,7 +80,6 @@ def Conv_Forward3D_GPU(A_prev,W,b,stride,padH=0,padW=0,padding="Valid",threadspe
                 opadW = 0
 
         #Set up
-        shape_size = len(A_prev_pad.shape)
         Z = np.zeros((m,n_H,n_W,n_C))
 
         #Move memory to GPU
@@ -260,19 +261,234 @@ def conv_step_forward2D(W,img,b,Z,stride,Hlim,Wlim,Clim):
         #wait result
         cuda.syncthreads()
 
-        
+#ConvBackward
+def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
 
+        """
+        dA -- (m,n_H,n_W,n_C)
+        cacheL -- (A_prev,W,b,stride,opadH,opadW)
+        dev2dZ -- function that calculate the derivative dZ
+        """
+        #Get informaton from cacheL
+        A_prev,W,b,stride,opadH,opadW = cacheL
+
+        #Get the shape of prev layer
+        m,n_H_prev,n_W_prev,n_C_prev = A_prev.shape
+        
+        #Get the shape of current layer
+        _,n_H,n_W,n_C = dZ.shape
+
+        #get the shape of filter
+        fH, fW, n_C_prev, n_C = W.shape
+        
+        #Set up
+        dA_prev = np.zeros((m,n_H_prev,n_W_prev,n_C_prev))
+        dW = np.zeros((fH,fW,n_C_prev,n_C))
+        db = np.zeros((1,1,1,n_C))
+
+        #move memory to GPU
+        if opadH == 0 and opadW == 0:
+
+                #A_prev -- (m,n_H_prev,n_W_prev,n_C_prev)
+                A_prev_pad = A_prev.copy()
+                #dA_prev -- (m,n_H_prev,n_W_prev,n_C_prev)
+                dA_prev_pad = dA_prev.copy()
+        else:
+                
+                A_prev_pad = zero_padding(A_prev,opadH,opadW)
+                dA_prev_pad = zero_padding(dA_prev,opadH,opadW)
+
+        A_prev_pad_device = cuda.to_device(A_prev_pad)
+        dA_prev_pad_device = cuda.to_device(dA_prev_pad)
+
+        #define stream
+        segment_size = threadsperblock[-1]
+        number_of_streams = int(math.ceil(n_C/segment_size))
+
+        stream_list = []
+        for i in range(number_of_streams):
+
+                stream_list.append(cuda.stream())
+
+        #blockspergrid
+        blockspergrid_H = int(math.ceil(n_H/threadsperblock[0]))
+        blockspergrid_W = int(math.ceil(n_W/threadsperblock[1]))
+        blockspergrid_C = int(math.ceil(segment_size/threadsperblock[2]))
+
+        blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
+
+        #backward
+        for s in range(number_of_streams):
+
+
+                #move memory to GPU
+                W_i = (W[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
+                W_device = cuda.to_device(W_i,stream = stream_list[s])
+                
+                b_i = (b[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
+                b_device = cuda.to_device(b_i,stream = stream_list[s])
+                
+                dZ_i = (dZ[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
+                dZ_device = cuda.to_device(dZ_i,stream = stream_list[s])
+                
+                dW_i = (dW[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
+                dW_device = cuda.to_device(dW_i,stream=stream_list[s])
+                
+                db_i = (db[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
+                db_device = cuda.to_device(db_i,stream=stream_list[s])
+
+                #calculation
+                conv_step_backward3D[blockspergrid,threadsperblock,stream_list[s]](A_prev_pad_device,W_device,dZ_device,dA_prev_pad_device,dW_device,db_device,stride,n_H,n_W,segment_size)
+                cuda.synchronize()
+
+                #Get result dW,db
+                dW[:,:,:,(s*segment_size):((s+1)*segment_size)] = dW_device.copy_to_host(stream=stream_list[s])
+                db[:,:,:,(s*segment_size):((s+1)*segment_size)] = db_device.copy_to_host(stream=stream_list[s])
+
+        #Get Result dA_prev
+        cuda.synchronize()
+        dA_prev_pad = dA_prev_pad_device.copy_to_host()
+        
+        if opadH != 0 and opadW != 0:
+
+                dA_prev[:,:,:,:] = dA_prev_pad[:,opadH:-opadH,opadW:-opadW,:]
+
+        elif opadH != 0 and opadW == 0:
+
+                dA_prev[:,:,:,:] = dA_prev_pad[:,opadH:-opadH,:,:]
+
+        elif opadH ==0 and opadW != 0:
+
+                dA_prev[:,:,:,:] = dA_prev_pad[:,:,opadW:-opadW,:]
+
+        else:
+                dA_prev = dA_prev_pad
+
+        return dA_prev,dW,db
+        
+@cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64,int64")
+def conv_step_backward3D(A_prev_pad,W,dZ,dA_prev_pad,dW,db,stride,Hlim,Wlim,Clim):
+
+        """
+        A_prev_pad -- (m,n_H_prev+2opadH,n_W_prev+2opadW,n_C_prev)
+        W-- (fH,fW,n_C_prev,Channels)
+        dZ -- (m,n_H,n_W,Channels)
+        dA_prev_pad -- (m,n_H_prev+2opadH,n_W_prev+2opadW,n_C_prev)
+        dW -- (fH,fW,n_C_prev,Channels)
+        db -- (1,1,1,Channels)
+        """
+
+        fH,fW,n_C_prev,Channels = W.shape
+        m,_,_,_ = dZ.shape
+
+        n_H = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
+        n_W = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
+        n_C = cuda.threadIdx.z + cuda.blockIdx.z * cuda.blockDim.z
+
+        if (n_H < Hlim) and (n_W < Wlim) and (n_C < Clim):
+
+                #loop through example
+                for i in range(m):
+
+                        #loop over vertical axis
+                        for h in range(fH):
+
+                                #loop over horizontal axis
+                                for w in range(fW):
+
+                                        #loop over each channels (prev)
+                                        for c in range(n_C_prev):
+
+                                                IMG_H = n_H*stride + h
+                                                IMG_W = n_W*stride + w
+
+                                                #dA prev pad
+                                                dA_prev_pad[i,IMG_H,IMG_W,c] = dA_prev_pad[i,IMG_H,IMG_W,c] + W[h,w,c,n_C] * dZ[i,n_H,n_W,n_C]
+                                                
+                                                #dW
+                                                dW[h,w,c,n_C] = dW[h,w,c,n_C] + A_prev_pad[i,IMG_H,IMG_W,c] * dZ[i,n_H,n_W,n_C]
+    
+
+                                                
+
+                        #db
+                        cuda.syncthreads()
+                        db[0,0,0,n_C] = db[0,0,0,n_C] + dZ[i,n_H,n_W,n_C]
+                        cuda.syncthreads()
+
+                
 
 if __name__ == "__main__":
 
         #Test
         import Layers
+   
+        #conv backward main function
+        
+        obj = Layers.ConvLayer()
 
-        #conv main function
+        np.random.seed(1)
+        img = np.random.randn(10,4,4,3)
+        W = np.random.randn(2,2,3,8)
+        b = np.random.randn(1,1,1,8)
+        stride = 2
+        
+        Z,cacheL = Conv_Forward3D_GPU(img,W,b,stride,padH=2,padW=2,threadsperblock=(4,4,8))
+        cuda.synchronize()
+
+        m,n_H,n_W,n_C = Z.shape
+        gpu_time = time.time()
+        dA_prev,dW,db = Conv_backward3D_GPU(Z,cacheL,threadsperblock=(4,4,8))#obj.conv_backward(Z, cacheL,lambda x:x)
+        cuda.synchronize()
+        print(f"With GPU:{time.time()-gpu_time}")
+        print("\n")
+        print("dA_mean =", np.mean(dA_prev))
+        print("dW_mean =", np.mean(dW))
+        print("db_mean =", np.mean(db))
+        print("\n")
+
+        #CPU
+        np.random.seed(1)
+        A_prev = np.random.randn(10,4,4,3)
+        W = np.random.randn(2,2,3,8)
+        b = np.random.randn(1,1,1,8)
+        
+        padH,padW,stride = 2,2,2
+        Z, cache_conv = obj.conv_forward(A_prev, W, b, stride,padH,padW)
+        cpu_time = time.time()
+        dAc, dWc, dbc = obj.conv_backward(Z, cache_conv,lambda x:x)
+        print(f"With CPU:{time.time()-cpu_time}")
+        print("\n")
+        print("dA_mean =", np.mean(dAc))
+        print("dW_mean =", np.mean(dWc))
+        print("db_mean =", np.mean(dbc))
+        print("\n")
+       # print(np.allclose(dA_prev,dAc))
+        #print(np.allclose(dW,dWc))
+        #print(np.allclose(db,dbc))
+
+   
+        """
+        #conv forward main function
+        #Test value
+        np.random.seed(1)
+        obj = Layers.ConvLayer()
+        A_prev = np.random.randn(10,5,7,4)
+        W = np.random.randn(3,3,4,8)
+        b = np.random.randn(1,1,1,8)
+        padH,padW,stride = 1,1,2
+
+        Z, cache_conv = Conv_Forward3D_GPU(A_prev,W,b,stride,padH,padW,threadsperblock=(4,4,8))
+
+        print("Z's mean =\n", np.mean(Z))
+        print("Z[3,2,1] =\n", Z[3,2,1])
+        print("cache_conv[0][1][2][3] =\n", cache_conv[0][1][2][3])
+        Z, cache_conv =  Conv_Forward3D_GPU(A_prev, W, b,stride,padding="Same")
+        print("Shape of Z:{}".format(Z.shape[1:3]))
+        
         #GPU
-        W = np.random.randn(3,3,3,512).astype(np.float64)
-        b = np.random.randn(1,1,1,512).astype(np.float64)
-        img = np.random.randn(1,1080,1920,3).astype(np.float64)
+        W,b = initialization_parameters(3,3,3,128)
+        img = np.random.randn(15,400,400,3).astype(np.float64)
         stride = 2
         gpu_time = time.time()
         Z,_ = Conv_Forward3D_GPU(img,W,b,stride)
@@ -287,9 +503,9 @@ if __name__ == "__main__":
         print(f"With CPU:{time.time()-cpu_time}")
         k2 = Z.copy()
 
-        print(np.array_equal(k1.round(6),k2.round(6)))
+        print(np.array_equal(k1.round(5),k2.round(5)))
         print(np.allclose(k1,k2))
-
+        """
         """
         #3D with sample
         #GPU
