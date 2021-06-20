@@ -298,6 +298,8 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
                 A_prev_pad = zero_padding(A_prev,opadH,opadW)
                 dA_prev_pad = zero_padding(dA_prev,opadH,opadW)
 
+        print(opadH,opadW)
+
         A_prev_pad_device = cuda.to_device(A_prev_pad)
         dA_prev_pad_device = cuda.to_device(dA_prev_pad)
 
@@ -402,11 +404,11 @@ def conv_step_backward3D(A_prev_pad,W,dZ,dA_prev_pad,dW,db,stride,Hlim,Wlim,Clim
                                                 IMG_H = n_H*stride + h
                                                 IMG_W = n_W*stride + w
 
-                                                #dA prev pad
-                                                dA_prev_pad[i,IMG_H,IMG_W,c] = dA_prev_pad[i,IMG_H,IMG_W,c] + W[h,w,c,n_C] * dZ[i,n_H,n_W,n_C]
-                                                
                                                 #dW
                                                 dW[h,w,c,n_C] = dW[h,w,c,n_C] + A_prev_pad[i,IMG_H,IMG_W,c] * dZ[i,n_H,n_W,n_C]
+
+                                                #dA prev pad
+                                                dA_prev_pad[i,IMG_H,IMG_W,c] = dA_prev_pad[i,IMG_H,IMG_W,c] + W[h,w,c,n_C] * dZ[i,n_H,n_W,n_C]
     
 
                                                 
@@ -424,7 +426,7 @@ if __name__ == "__main__":
         import Layers
    
         #conv backward main function
-        
+
         obj = Layers.ConvLayer()
 
         np.random.seed(1)
@@ -447,14 +449,9 @@ if __name__ == "__main__":
         print("db_mean =", np.mean(db))
         print("\n")
 
-        #CPU
-        np.random.seed(1)
-        A_prev = np.random.randn(10,4,4,3)
-        W = np.random.randn(2,2,3,8)
-        b = np.random.randn(1,1,1,8)
-        
+        #CPU       
         padH,padW,stride = 2,2,2
-        Z, cache_conv = obj.conv_forward(A_prev, W, b, stride,padH,padW)
+        Z, cache_conv = obj.conv_forward(img, W, b, stride,padH,padW)
         cpu_time = time.time()
         dAc, dWc, dbc = obj.conv_backward(Z, cache_conv,lambda x:x)
         print(f"With CPU:{time.time()-cpu_time}")
@@ -466,7 +463,17 @@ if __name__ == "__main__":
        # print(np.allclose(dA_prev,dAc))
         #print(np.allclose(dW,dWc))
         #print(np.allclose(db,dbc))
-
+    
+        """
+       #padding
+        np.random.seed(1)
+        x = np.random.randn(4, 3, 3, 2)
+        x_pad = zero_padding(x,2,2)
+        print ("x.shape =\n", x.shape)
+        print ("x_pad.shape =\n", x_pad.shape)
+        print ("x[1,1] =\n", x[1,1])
+        print ("x_pad[1,1] =\n", x_pad[1,1])
+        """
    
         """
         #conv forward main function
