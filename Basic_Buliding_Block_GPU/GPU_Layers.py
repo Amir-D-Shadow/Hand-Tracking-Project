@@ -489,11 +489,11 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
                 dZ_device = cuda.to_device(dZ_i,stream = stream_list[s])
 
                 #Calculation
-                conv_step_backward3D[blockspergrid,threadsperblock,stream_list[s]](A_prev_pad_device,dZ_device,dA_prev_pad_device,dW_device,db_device,stride,n_H,n_W,n_C) 
+                conv_step_backward3D[blockspergrid,threadsperblock,stream_list[s]](A_prev_pad_device,W_device,dZ_device,dA_prev_pad_device,dW_device,db_device,stride,n_H,n_W,n_C) 
                 cuda.synchronize()
 
                 #Get result dA_prev_pad
-                dA_prev_pad[i,:,:,:] = dA_prev_pad_device.copy_to_host(steam = stream_list[s])
+                dA_prev_pad[i,:,:,:] = dA_prev_pad_device.copy_to_host(stream = stream_list[s])
                 cuda.synchronize()
                 
         #Get Result dW,db
@@ -521,8 +521,8 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
         return dA_prev,dW,db
 
 
- @cuda.jit("float64[:,:,:],float64[:,:,:,:],float64[:,:,:],float64[:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64,int64")
- def conv_step_backward3D(A_prev_pad,W,dZ,dA_prev_pad,dW,db,stride,Hlim,Wlim,Clim):
+@cuda.jit("float64[:,:,:],float64[:,:,:,:],float64[:,:,:],float64[:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64,int64")
+def conv_step_backward3D(A_prev_pad,W,dZ,dA_prev_pad,dW,db,stride,Hlim,Wlim,Clim):
 
         """
         A_prev_pad -- (n_H_prev+2opadH,n_W_prev+2opadW,n_C_prev)
