@@ -84,9 +84,6 @@ def Conv_Forward3D_GPU(A_prev,W,b,stride,padH=0,padW=0,padding="Valid",threadspe
 
         #Move memory to GPU
         A_prev_pad_device = cuda.to_device(A_prev_pad)
-        #W_device = cuda.to_device(W)
-        #b_device = cuda.to_device(b)
-        #Z_device = cuda.to_device(Z)
 
         #Create stream
         segment_size = threadsperblock[-1]
@@ -111,8 +108,10 @@ def Conv_Forward3D_GPU(A_prev,W,b,stride,padH=0,padW=0,padding="Valid",threadspe
             #Move memory to GPU
             W_i = (W[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
             W_device = cuda.to_device(W_i,stream = stream_list[s])
+            
             b_i = (b[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
             b_device = cuda.to_device(b_i,stream = stream_list[s])
+            
             Z_i = (Z[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
             Z_device = cuda.to_device(Z_i,stream = stream_list[s])
             
@@ -262,7 +261,7 @@ def conv_step_forward2D(W,img,b,Z,stride,Hlim,Wlim,Clim):
         cuda.syncthreads()
 
 #ConvBackward
-def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
+def Conv_backward3D_GPU_ver2(dZ,cacheL,threadsperblock=(4,4,32)):
 
         """
         dA -- (m,n_H,n_W,n_C)
@@ -367,9 +366,10 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
                 dA_prev = dA_prev_pad
 
         return dA_prev,dW,db
-        
+
+
 @cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64,int64")
-def conv_step_backward3D(A_prev_pad,W,dZ,dA_prev_pad,dW,db,stride,Hlim,Wlim,Clim):
+def conv_step_backward3D_ver2(A_prev_pad,W,dZ,dA_prev_pad,dW,db,stride,Hlim,Wlim,Clim):
 
         """
         A_prev_pad -- (m,n_H_prev+2opadH,n_W_prev+2opadW,n_C_prev)
@@ -418,7 +418,153 @@ def conv_step_backward3D(A_prev_pad,W,dZ,dA_prev_pad,dW,db,stride,Hlim,Wlim,Clim
                         db[0,0,0,n_C] = db[0,0,0,n_C] + dZ[i,n_H,n_W,n_C]
                         cuda.syncthreads()
 
+
+def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
+
+        """
+        dZ -- (m,n_H,n_W,n_C)
+        cacheL -- (A_prev,W,b,stride,opadH,opadW)
+        A_prev -- (m,n_H_prev,n_W_prev,n_C_prev)
+        W -- (fH,fW,n_C_prev,n_C)
+        """
+
+        #Get info from cacheL
+        A_prev,W,b,stride,opadH,opadW = cacheL
+
+        #Get dZ shape
+        m,n_H,n_W,n_C = dZ.shape
+
+        #Get A_prev shape
+        m,n_H_prev,n_W_prev,n_C_prev = A_prev.shape
+
+        #Get W shape
+        fH,fW,n_C_prev,n_C = W.shape
+
+        #set up for target result
+        dA_prev = np.zeros((m,n_H_prev,n_W_prev,n_C_prev))
+        dW = np.zeros((fH,fW,n_C_prev,n_C))
+        db = np.zeros((1,1,1,n_C))
+
+        #Move memory to GPU dW,db
+        dW_device = cuda.to_device(dW)
+        db_device = cuda.to_device(db)
+        W_device = cuda.to_device(W)
+        
+        #pad to convolution size
+        if opadH == 0 and opadW == 0:
+
+                A_prev_pad = A_prev.copy()
+                dA_prev_pad = dA_prev.copy()
+
+        else:
+
+                A_prev_pad = zero_padding(A_prev,opadH,opadW)
+                dA_prev_pad = zero_padding(dA_prev,opadH,opadW)
+
+        #define stream
+        number_of_streams = m
+        stream_list = []
+        for i in range(number_of_streams):
+
+                stream_list.append(cuda.stream())
+
+        #define blockspergrid
+        blockspergrid_H = int(math.ceil(n_H/threadsperblock[0]))
+        blockspergrid_W = int(math.ceil(n_W/threadsperblock[1]))
+        blockspergrid_C = int(math.ceil(n_C/threadsperblock[2]))
+
+        blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
+        
+        #Back propagation : loop via samples
+        for s in range(number_of_streams):
+
+                #Move memory to GPU
+                A_prev_pad_i = (A_prev_pad[s,:,:,:]).copy()
+                A_prev_pad_device = cuda.to_device(A_prev_pad_i,stream = stream_list[s])
+
+                dA_prev_pad_i = (dA_prev_pad[s,:,:,:]).copy()
+                dA_prev_pad_device = cuda.to_device(dA_prev_pad_i,stream = stream_list[s])
+
+                dZ_i = (dZ[s,:,:,:]).copy()
+                dZ_device = cuda.to_device(dZ_i,stream = stream_list[s])
+
+                #Calculation
+                conv_step_backward3D[blockspergrid,threadsperblock,stream_list[s]](A_prev_pad_device,dZ_device,dA_prev_pad_device,dW_device,db_device,stride,n_H,n_W,n_C) 
+                cuda.synchronize()
+
+                #Get result dA_prev_pad
+                dA_prev_pad[i,:,:,:] = dA_prev_pad_device.copy_to_host(steam = stream_list[s])
+                cuda.synchronize()
                 
+        #Get Result dW,db
+        dW = dW_device.copy_to_host()
+        db = db_device.copy_to_host()
+        cuda.synchronize()
+
+        #Get Result dA_prev
+        if opadH !=0 and opadW != 0 :
+
+                dA_prev = dA_prev_pad[:,opadH:-opadH,opadW:-opadW,:]
+
+        elif opadH != 0 and opadW == 0:
+
+                dA_prev = dA_prev_pad[:,opadH:-opadH,:,:]
+
+        elif opadH == 0 and opadW != 0:
+
+                dA_prev = dA_prev_pad[:,:,opadW:-opadW,:]
+
+        else:
+
+                dA_prev = dA_prev_pad.copy()
+
+        return dA_prev,dW,db
+
+
+ @cuda.jit("float64[:,:,:],float64[:,:,:,:],float64[:,:,:],float64[:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64,int64")
+ def conv_step_backward3D(A_prev_pad,W,dZ,dA_prev_pad,dW,db,stride,Hlim,Wlim,Clim):
+
+        """
+        A_prev_pad -- (n_H_prev+2opadH,n_W_prev+2opadW,n_C_prev)
+        W -- (fH,fW,n_C_prev,Channels)
+        dZ -- (n_H,n_W,Channels)
+        dA_prev_pad -- (n_H_prev+2opadH,n_W_prev+2opadW,n_C_prev)
+        dW -- (fH,fW,n_C_prev,Channels)
+        db -- (1,1,1,Channels)
+        """
+
+        fH,fW,n_C_prev,_ = W.shape
+
+        n_H = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
+        n_W = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
+        n_C = cuda.threadIdx.z + cuda.blockIdx.z * cuda.blockDim.z
+
+        if (n_H < Hlim) and (n_W < Wlim) and (n_C < Clim):
+
+                #Loop through vertical axis
+                for h in range(fH):
+
+                        #Loop through horizontal axis
+                        for w in range(fW):
+
+                                #Loop through channels prev
+                                for c in range(n_C_prev):
+
+                                        IMG_H = n_H * stride + h
+                                        IMG_W = n_W * stride + w
+
+                                        #dA prev pad
+                                        dA_prev_pad[IMG_H,IMG_W,c] = dA_prev_pad[IMG_H,IMG_W,c] + dW[h,w,c,n_C]*dZ[n_H,n_W,n_C]
+
+                        
+                                        #dW
+                                        dW[h,w,c,n_C] = dW[h,w,c,n_C] + A_prev_pad[IMG_H,IMG_W,c]*dZ[n_H,n_W,n_C]
+
+                #db
+                cuda.syncthreads()
+                db[0,0,0,n_C] = db[0,0,0,n_C] + dZ[n_H,n_W,n_C]
+                cuda.syncthreads()
+         
 
 if __name__ == "__main__":
 
@@ -460,7 +606,7 @@ if __name__ == "__main__":
         print("dW_mean =", np.mean(dWc))
         print("db_mean =", np.mean(dbc))
         print("\n")
-       # print(np.allclose(dA_prev,dAc))
+        #print(np.allclose(dA_prev,dAc))
         #print(np.allclose(dW,dWc))
         #print(np.allclose(db,dbc))
     
