@@ -278,7 +278,6 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
         #backward dA_prev_pad
         for s in range(number_of_streams):
 
-
                 #move memory to GPU
                 W_i = (W[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
                 W_device = cuda.to_device(W_i,stream = stream_list[s])
@@ -453,7 +452,7 @@ if __name__ == "__main__":
         import Layers
    
         #conv backward main function
-                     
+        """             
         obj = Layers.ConvLayer()
 
         np.random.seed(1)
@@ -490,7 +489,7 @@ if __name__ == "__main__":
         #print(np.allclose(dA_prev,dAc))
         print(np.allclose(dW,dWc))
         print(np.allclose(db,dbc))
-        
+        """
         """
         #padding
         np.random.seed(1)
@@ -543,7 +542,7 @@ if __name__ == "__main__":
 
         print(np.array_equal(k1.round(6),k2.round(6)))
         print(np.allclose(k1,k2))
-        """
+       """
         
         """
         #3D with sample
