@@ -268,6 +268,7 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
 
                 stream_list.append(cuda.stream())
 
+        """
         #blockspergrid for dA_prev_pad
         m,n_H_prev_pad,n_W_prev_pad,n_C_prev = dA_prev_pad.shape
         
@@ -276,7 +277,7 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
         blockspergrid_C = int(math.ceil(n_C_prev/threadsperblock[2]))
 
         blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
-
+        
         #backward dA_prev_pad
         for s in range(number_of_streams):
 
@@ -286,12 +287,38 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
 
                 #calculation
                 conv_step_backward3D_dA_prev_pad[blockspergrid,threadsperblock,stream_list[s]](dA_prev_pad_device,W_device,dZ_device,stride,n_H_prev_pad,n_W_prev_pad,n_C_prev)
-                cuda.synchronize()
-
+                
+        
         #Get Result dA_prev
         cuda.synchronize()
         dA_prev_pad = dA_prev_pad_device.copy_to_host()
-        
+        """
+        for i in range(m):
+
+            #Get the sample
+            a_prev_pad = A_prev_pad[i,:,:,:]
+
+            #Loop through each filter
+            for c in range(n_C):
+
+                #Loop through vertical axis
+                for h in range(n_H):
+
+                    vert_start = h*stride
+                    vert_end = vert_start + fH
+
+                    #Loop through horizontal axis
+                    for w in range(n_W):
+
+                        hori_start = w*stride
+                        hori_end = hori_start + fW
+
+                        #Get the slice from a_prev_pad
+                        a_slice_prev = a_prev_pad[vert_start:vert_end,hori_start:hori_end,:]
+
+                        #dA_prev_pad
+                        dA_prev_pad[i,vert_start:vert_end,hori_start:hori_end,:] += W[:,:,:,c]*dZ[i,h,w,c]
+                        
         if opadH != 0 and opadW != 0:
 
                 dA_prev[:,:,:,:] = dA_prev_pad[:,opadH:-opadH,opadW:-opadW,:]
@@ -324,7 +351,7 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
           cuda.synchronize()
 
           dW[:,:,:,(s*segment_size):((s+1)*segment_size)] = dW_device.copy_to_host(stream=stream_list[s])
-          cuda.synchronize()
+          #cuda.synchronize()
 
         #blockspergrid for db
         blockspergrid_H = int(math.ceil(bH/threadsperblock[0]))
@@ -343,7 +370,8 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
           cuda.synchronize()
 
           db[:,:,:,(s*segment_size):((s+1)*segment_size)] = db_device.copy_to_host(stream=stream_list[s])
-          cuda.synchronize()
+
+        cuda.synchronize()
 
         return dA_prev,dW,db
 
@@ -458,21 +486,27 @@ if __name__ == "__main__":
         import Layers
    
         #conv backward main function
-        """             
+                   
         obj = Layers.ConvLayer()
-
+        """
         np.random.seed(1)
         img = np.random.randn(10,4,4,3)
         W = np.random.randn(2,2,3,8)
         b = np.random.randn(1,1,1,8)
         stride = 2
+        """
+
+        img = np.random.randn(10,120,120,3)
+        W = np.random.randn(3,3,3,64)
+        b = np.random.randn(1,1,1,64)
+        stride = 2
         
-        Z,cacheL = Conv_Forward3D_GPU(img,W,b,stride,padH=2,padW=2,threadsperblock=(4,4,32))
+        Z,cacheL = Conv_Forward3D_GPU(img,W,b,stride,padH=2,padW=2,threadsperblock=(8,8,8))
         cuda.synchronize()
 
         m,n_H,n_W,n_C = Z.shape
         gpu_time = time.time()
-        dA_prev,dW,db = Conv_backward3D_GPU(Z,cacheL,threadsperblock=(4,4,32))#obj.conv_backward(Z, cacheL,lambda x:x)
+        dA_prev,dW,db = Conv_backward3D_GPU(Z,cacheL,threadsperblock=(9,9,9))#obj.conv_backward(Z, cacheL,lambda x:x)
         cuda.synchronize()
         print(f"With GPU:{time.time()-gpu_time}")
         print("\n")
@@ -492,10 +526,10 @@ if __name__ == "__main__":
         print("dW_mean =", np.mean(dWc))
         print("db_mean =", np.mean(dbc))
         print("\n")
-        #print(np.allclose(dA_prev,dAc))
+        print(np.allclose(dA_prev,dAc))
         print(np.allclose(dW,dWc))
         print(np.allclose(db,dbc))
-        """
+        
         """
         #padding
         np.random.seed(1)
