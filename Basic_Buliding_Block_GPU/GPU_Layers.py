@@ -244,7 +244,7 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
         dW = np.zeros((fH,fW,n_C_prev,n_C))
         db = np.zeros((1,1,1,n_C))
 
-        #move memory to GPU
+        #move memory to GPU A_prev_pad,dA_prev_pad
         if opadH == 0 and opadW == 0:
 
                 #A_prev -- (m,n_H_prev,n_W_prev,n_C_prev)
@@ -269,9 +269,11 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
                 stream_list.append(cuda.stream())
 
         #blockspergrid for dA_prev_pad
-        blockspergrid_H = int(math.ceil(n_H/threadsperblock[0]))
-        blockspergrid_W = int(math.ceil(n_W/threadsperblock[1]))
-        blockspergrid_C = int(math.ceil(segment_size/threadsperblock[2]))
+        m,n_H_prev_pad,n_W_prev_pad,n_C_prev = dA_prev_pad.shape
+        
+        blockspergrid_H = int(math.ceil(n_H_prev_pad/threadsperblock[0]))
+        blockspergrid_W = int(math.ceil(n_W_prev_pad/threadsperblock[1]))
+        blockspergrid_C = int(math.ceil(n_C_prev/threadsperblock[2]))
 
         blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
 
@@ -279,14 +281,11 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
         for s in range(number_of_streams):
 
                 #move memory to GPU
-                W_i = (W[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
-                W_device = cuda.to_device(W_i,stream = stream_list[s])
-                
-                dZ_i = (dZ[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy()
-                dZ_device = cuda.to_device(dZ_i,stream = stream_list[s])
+                W_device = cuda.to_device((W[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy(),stream = stream_list[s])                
+                dZ_device = cuda.to_device((dZ[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy(),stream = stream_list[s])
 
                 #calculation
-                conv_step_backward3D_dA_prev_pad[blockspergrid,threadsperblock,stream_list[s]](dA_prev_pad_device,W_device,dZ_device,stride,n_H,n_W,segment_size)
+                conv_step_backward3D_dA_prev_pad[blockspergrid,threadsperblock,stream_list[s]](dA_prev_pad_device,W_device,dZ_device,stride,n_H_prev_pad,n_W_prev_pad,n_C_prev)
                 cuda.synchronize()
 
         #Get Result dA_prev
@@ -350,6 +349,51 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
 
 
 @cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64,int64")
+def conv_step_backward3D_dA_prev_pad(dA_prev_pad,W,dZ,stride,Hlim,Wlim,Clim):
+
+  """
+  dA_prev_pad -- (m,n_H_prev,n_W_prev,n_C_prev)
+  W -- (fH,fW,n_C_prev,n_C)
+  dZ -- (m,n_H,n_W,n_C)
+  """
+
+  IMG_H = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
+  IMG_W = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
+  IMG_C_prev = cuda.threadIdx.z + cuda.blockDim.z * cuda.blockIdx.z
+
+  if (IMG_H < Hlim) and (IMG_W < Wlim) and (IMG_C_prev < Clim):
+
+    fH,fW,n_C_prev,number_of_filters = W.shape
+    m,n_H,n_W,number_of_filters = dZ.shape
+
+    #find the corresponding components
+    #loop through different example
+    for i in range(m):
+
+      #loop through different filters
+      for nc in range(number_of_filters):
+
+        for nh in range(n_H):
+
+          for nw in range(n_W):
+
+            for h in range(fH):
+
+              for w in range(fW):
+
+                cor_H = nh * stride + h
+                cor_W = nw * stride + w
+
+                if (cor_H > IMG_H) and (cor_W > IMG_W):
+
+                  break 
+
+                if (cor_H == IMG_H) and (cor_W == IMG_W):
+
+                  dA_prev_pad[i,IMG_H,IMG_W,IMG_C_prev] = dA_prev_pad[i,IMG_H,IMG_W,IMG_C_prev] + W[h,w,IMG_C_prev,nc] * dZ[i,nh,nw,nc]
+
+                  
+@cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64,int64")
 def conv_step_backward3D_dW(A_prev_pad,dW,dZ,stride,Hlim,Wlim,Clim):
 
   """
@@ -364,13 +408,13 @@ def conv_step_backward3D_dW(A_prev_pad,dW,dZ,stride,Hlim,Wlim,Clim):
 
   if (h < Hlim) and (w < Wlim) and (n_C_prev < Clim):
 
-    m,n_H,n_W,segemnt_size = dZ.shape
+    m,nH,nW,segemnt_size = dZ.shape
 
     for i in range(m):
 
-      for n_h in range(n_H):
+      for n_h in range(nH):
 
-        for n_w in range(n_W):
+        for n_w in range(nW):
 
             for n_c in range(segemnt_size):
 
@@ -394,57 +438,19 @@ def conv_step_backward3D_db(db,dZ,Hlim,Wlim,Clim):
 
   if (x < Hlim) and (y < Wlim) and (z < Clim):
 
-    m,n_H,n_W,segemnt_size = dZ.shape
+    m,nH,nW,segemnt_size = dZ.shape
 
     for i in range(m):
 
-      for n_h in range(n_H):
+      for n_h in range(nH):
 
-        for n_w in range(n_W):
+        for n_w in range(nW):
 
           for n_c in range(segemnt_size):
 
             db[x,y,z,n_c] = db[x,y,z,n_c] + dZ[i,n_h,n_w,n_c]
 
-            
-@cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64,int64")
-def conv_step_backward3D_dA_prev_pad(dA_prev_pad,W,dZ,stride,Hlim,Wlim,Clim):
-
-        """
-        dA_prev_pad -- (m,n_H_prev+2opadH,n_W_prev+2opadW,n_C_prev)
-        W-- (fH,fW,n_C_prev,Channels)
-        dZ -- (m,n_H,n_W,Channels)
-        """
-
-        n_H = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
-        n_W = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
-        n_C = cuda.threadIdx.z + cuda.blockIdx.z * cuda.blockDim.z
-
-        if (n_H < Hlim) and (n_W < Wlim) and (n_C < Clim):
-
-                fH,fW,n_C_prev,Channels = W.shape
-                m,_,_,_ = dZ.shape
-
-                #loop through example
-                for i in range(m):
-
-                        #loop over vertical axis
-                        for h in range(fH):
-
-                                #loop over horizontal axis
-                                for w in range(fW):
-
-                                        #loop over each channels (prev)
-                                        for c in range(n_C_prev):
-
-                                                IMG_H = n_H*stride + h
-                                                IMG_W = n_W*stride + w
-
-                                                #dA prev pad
-                                                dA_prev_pad[i,IMG_H,IMG_W,c] = dA_prev_pad[i,IMG_H,IMG_W,c] + W[h,w,c,n_C] * dZ[i,n_H,n_W,n_C]
-    
-
-         
+                     
 
 if __name__ == "__main__":
 
