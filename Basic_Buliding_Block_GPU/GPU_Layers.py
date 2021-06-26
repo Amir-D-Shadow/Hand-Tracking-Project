@@ -483,7 +483,7 @@ def conv_step_backward3D_dW(A_prev_pad,dW,dZ,stride,Hlim,Wlim,Clim):
               dW[h,w,n_C_prev,n_c] = dW[h,w,n_C_prev,n_c] + A_prev_pad[i,IMG_H,IMG_W,n_C_prev]*dZ[i,n_h,n_w,n_c]
     
     """
-    #method 1
+    #method 2
     for i in range(m):
 
       for n_c in range(segemnt_size):
