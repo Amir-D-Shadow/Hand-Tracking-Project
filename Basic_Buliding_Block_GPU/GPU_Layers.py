@@ -41,7 +41,7 @@ def initialization_parameters(fH,fW,n_C_prev,n_C):
 #ConvLayer
 
 #Convolution Forward
-def Conv_Forward3D_GPU(A_prev,W,b,stride,padH=0,padW=0,padding="Valid",threadsperblock=(4,4,32)):
+def Conv_Forward3D_GPU(A_prev,W,b,stride,padH=0,padW=0,padding="Valid",threadsperblock=(8,8,8)):
 
         """
         A_prev -- (m, n_H_prev, n_W_prev, n_C_prev) 
@@ -218,7 +218,7 @@ def conv_step_forward3D(W,img,b,Z,stride,Hlim,Wlim,Clim):
 
 
 #ConvBackward
-def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
+def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(8,8,8)):
 
         """
         dA -- (m,n_H,n_W,n_C)
@@ -402,6 +402,7 @@ def conv_step_backward3D_dA_prev_pad(dA_prev_pad,W,dZ,stride,Hlim,Wlim,Clim):
     fH,fW,n_C_prev,number_of_filters = W.shape
     m,n_H,n_W,number_of_filters = dZ.shape
 
+    #method 1
     #find the corresponding components
     #loop through different example
     for i in range(m):
@@ -424,7 +425,14 @@ def conv_step_backward3D_dA_prev_pad(dA_prev_pad,W,dZ,stride,Hlim,Wlim,Clim):
 
                   dA_prev_pad[i,IMG_H,IMG_W,IMG_C_prev] = dA_prev_pad[i,IMG_H,IMG_W,IMG_C_prev] + W[h,w,IMG_C_prev,nc] * dZ[i,nh,nw,nc]
                   
-        """
+    """
+    #method 2
+    #find the corresponding components
+    #loop through different example
+    for i in range(m):
+
+      #loop through different filters
+      for nc in range(number_of_filters):
         for nh in range(n_H):
 
           for nw in range(n_W):
@@ -441,7 +449,7 @@ def conv_step_backward3D_dA_prev_pad(dA_prev_pad,W,dZ,stride,Hlim,Wlim,Clim):
 
                   dA_prev_pad[i,IMG_H,IMG_W,IMG_C_prev] = dA_prev_pad[i,IMG_H,IMG_W,IMG_C_prev] + W[h,w,IMG_C_prev,nc] * dZ[i,nh,nw,nc]
 
-        """
+    """
                   
 @cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64,int64")
 def conv_step_backward3D_dW(A_prev_pad,dW,dZ,stride,Hlim,Wlim,Clim):
@@ -459,7 +467,8 @@ def conv_step_backward3D_dW(A_prev_pad,dW,dZ,stride,Hlim,Wlim,Clim):
   if (h < Hlim) and (w < Wlim) and (n_C_prev < Clim):
 
     m,nH,nW,segemnt_size = dZ.shape
-
+    #method 1
+    
     for i in range(m):
 
       for n_h in range(nH):
@@ -472,8 +481,50 @@ def conv_step_backward3D_dW(A_prev_pad,dW,dZ,stride,Hlim,Wlim,Clim):
               IMG_W = n_w*stride + w
 
               dW[h,w,n_C_prev,n_c] = dW[h,w,n_C_prev,n_c] + A_prev_pad[i,IMG_H,IMG_W,n_C_prev]*dZ[i,n_h,n_w,n_c]
+    
+    """
+    #method 1
+    for i in range(m):
 
+      for n_c in range(segemnt_size):
 
+        for n_h in range(nH):
+          
+          #get n_w tail
+          n_w_tail = nW - 1
+
+          for n_w in range(nW):
+            
+            if n_w > n_w_tail:
+
+              break
+
+            if (n_w == n_w_tail):
+              
+              IMG_H = n_h*stride + h
+              IMG_W = n_w*stride + w
+
+              dW[h,w,n_C_prev,n_c] = dW[h,w,n_C_prev,n_c] + A_prev_pad[i,IMG_H,IMG_W,n_C_prev]*dZ[i,n_h,n_w,n_c]
+
+            else:
+
+              #calculate head 
+              IMG_H = n_h*stride + h
+              IMG_W = n_w*stride + w
+
+              dW[h,w,n_C_prev,n_c] = dW[h,w,n_C_prev,n_c] + A_prev_pad[i,IMG_H,IMG_W,n_C_prev]*dZ[i,n_h,n_w,n_c]
+
+              #calculate tail
+              #IMG_H = n_h*stride + h
+              IMG_W = n_w_tail*stride + w
+
+              dW[h,w,n_C_prev,n_c] = dW[h,w,n_C_prev,n_c] + A_prev_pad[i,IMG_H,IMG_W,n_C_prev]*dZ[i,n_h,n_w_tail,n_c]
+
+            n_w_tail = n_w_tail - 1
+              
+          
+    """
+    
 @cuda.jit("float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64")
 def conv_step_backward3D_db(db,dZ,Hlim,Wlim,Clim):
 
@@ -503,13 +554,15 @@ def conv_step_backward3D_db(db,dZ,Hlim,Wlim,Clim):
                      
 
 if __name__ == "__main__":
-
+  
+        """
         #Test
         import Layers
-   
+        
         #conv backward main function
                    
         obj = Layers.ConvLayer()
+        """
         """
         np.random.seed(1)
         img = np.random.randn(10,4,4,3)
@@ -517,8 +570,8 @@ if __name__ == "__main__":
         b = np.random.randn(1,1,1,8)
         stride = 2
         """
-
-        img = np.random.randn(10,120,120,3)
+        """
+        img = np.random.randn(10,131,131,3)
         W = np.random.randn(3,3,3,64)
         b = np.random.randn(1,1,1,64)
         stride = 2
@@ -528,7 +581,7 @@ if __name__ == "__main__":
 
         m,n_H,n_W,n_C = Z.shape
         gpu_time = time.time()
-        dA_prev,dW,db = Conv_backward3D_GPU(Z,cacheL,threadsperblock=(9,9,9))#obj.conv_backward(Z, cacheL,lambda x:x)
+        dA_prev,dW,db = Conv_backward3D_GPU(Z,cacheL,threadsperblock=(8,8,8))#obj.conv_backward(Z, cacheL,lambda x:x)
         cuda.synchronize()
         print(f"With GPU:{time.time()-gpu_time}")
         print("\n")
@@ -551,7 +604,7 @@ if __name__ == "__main__":
         print(np.allclose(dA_prev,dAc))
         print(np.allclose(dW,dWc))
         print(np.allclose(db,dbc))
-        
+        """
         """
         #padding
         np.random.seed(1)
