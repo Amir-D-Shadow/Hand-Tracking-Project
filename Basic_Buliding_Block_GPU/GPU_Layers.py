@@ -267,8 +267,8 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
         for i in range(number_of_streams):
 
                 stream_list.append(cuda.stream())
-
-        """
+                
+        
         #blockspergrid for dA_prev_pad
         m,n_H_prev_pad,n_W_prev_pad,n_C_prev = dA_prev_pad.shape
         
@@ -277,7 +277,7 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
         blockspergrid_C = int(math.ceil(n_C_prev/threadsperblock[2]))
 
         blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
-        
+       
         #backward dA_prev_pad
         for s in range(number_of_streams):
 
@@ -292,33 +292,12 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
         #Get Result dA_prev
         cuda.synchronize()
         dA_prev_pad = dA_prev_pad_device.copy_to_host()
+        
         """
-        for i in range(m):
-
-            #Get the sample
-            a_prev_pad = A_prev_pad[i,:,:,:]
-
-            #Loop through each filter
-            for c in range(n_C):
-
-                #Loop through vertical axis
-                for h in range(n_H):
-
-                    vert_start = h*stride
-                    vert_end = vert_start + fH
-
-                    #Loop through horizontal axis
-                    for w in range(n_W):
-
-                        hori_start = w*stride
-                        hori_end = hori_start + fW
-
-                        #Get the slice from a_prev_pad
-                        a_slice_prev = a_prev_pad[vert_start:vert_end,hori_start:hori_end,:]
-
-                        #dA_prev_pad
-                        dA_prev_pad[i,vert_start:vert_end,hori_start:hori_end,:] += W[:,:,:,c]*dZ[i,h,w,c]
-                        
+        #calculate dA_prev_pad
+        conv_step_backward3D_dA_prev_pad_jit(dA_prev_pad,W,dZ,stride)
+        """
+        
         if opadH != 0 and opadW != 0:
 
                 dA_prev[:,:,:,:] = dA_prev_pad[:,opadH:-opadH,opadW:-opadW,:]
@@ -351,7 +330,6 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
           cuda.synchronize()
 
           dW[:,:,:,(s*segment_size):((s+1)*segment_size)] = dW_device.copy_to_host(stream=stream_list[s])
-          #cuda.synchronize()
 
         #blockspergrid for db
         blockspergrid_H = int(math.ceil(bH/threadsperblock[0]))
@@ -360,6 +338,8 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
 
         blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
 
+        cuda.synchronize()
+        
         #backward db
         for s in range(number_of_streams):
 
@@ -374,6 +354,34 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(4,4,32)):
         cuda.synchronize()
 
         return dA_prev,dW,db
+    
+
+@jit("float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64",nopython=True)
+def conv_step_backward3D_dA_prev_pad_jit(dA_prev_pad,W,dZ,stride):
+
+    fH,fW,n_C_prev,n_C = W.shape
+    m,n_H,n_W,n_C = dZ.shape
+
+    for i in range(m):
+
+        #Loop through each filter
+        for c in range(n_C):
+
+            #Loop through vertical axis
+            for h in range(n_H):
+
+                vert_start = h*stride
+                vert_end = vert_start + fH
+
+                #Loop through horizontal axis
+                for w in range(n_W):
+
+                    hori_start = w*stride
+                    hori_end = hori_start + fW
+
+                    #dA_prev_pad
+                    dA_prev_pad[i,vert_start:vert_end,hori_start:hori_end,:] += W[:,:,:,c]*dZ[i,h,w,c]
+                        
 
 
 @cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64,int64")
@@ -401,6 +409,22 @@ def conv_step_backward3D_dA_prev_pad(dA_prev_pad,W,dZ,stride,Hlim,Wlim,Clim):
       #loop through different filters
       for nc in range(number_of_filters):
 
+        for h in range(fH):
+
+          for w in range(fW):
+
+              nh = (IMG_H - h) / stride
+              nw = (IMG_W - w) / stride
+
+              if ((nh-int(nh)) == 0 ) and ((nw-int(nw)) == 0 ):
+
+                  #convert back to int as nh and nw become float after division
+                  nh = int(nh)
+                  nw = int(nw)
+
+                  dA_prev_pad[i,IMG_H,IMG_W,IMG_C_prev] = dA_prev_pad[i,IMG_H,IMG_W,IMG_C_prev] + W[h,w,IMG_C_prev,nc] * dZ[i,nh,nw,nc]
+                  
+        """
         for nh in range(n_H):
 
           for nw in range(n_W):
@@ -412,14 +436,12 @@ def conv_step_backward3D_dA_prev_pad(dA_prev_pad,W,dZ,stride,Hlim,Wlim,Clim):
                 cor_H = nh * stride + h
                 cor_W = nw * stride + w
 
-                if (cor_H > IMG_H) and (cor_W > IMG_W):
-
-                  break 
 
                 if (cor_H == IMG_H) and (cor_W == IMG_W):
 
                   dA_prev_pad[i,IMG_H,IMG_W,IMG_C_prev] = dA_prev_pad[i,IMG_H,IMG_W,IMG_C_prev] + W[h,w,IMG_C_prev,nc] * dZ[i,nh,nw,nc]
 
+        """
                   
 @cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:,:],int64,int64,int64,int64")
 def conv_step_backward3D_dW(A_prev_pad,dW,dZ,stride,Hlim,Wlim,Clim):
