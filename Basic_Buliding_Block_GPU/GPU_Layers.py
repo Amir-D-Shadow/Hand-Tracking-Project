@@ -220,7 +220,7 @@ def conv_step_forward3D(W,img,b,Z,stride,Hlim,Wlim,Clim):
 def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(8,8,8)):
 
         """
-        dA -- (m,n_H,n_W,n_C)
+        dZ -- (m,n_H,n_W,n_C)
         cacheL -- (A_prev,W,b,stride,opadH,opadW)
         """
         #Get informaton from cacheL
@@ -322,8 +322,8 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(8,8,8)):
         #backward dW
         for s in range(number_of_streams):
 
-          dW_device = cuda.to_device(dW[:,:,:,(s*segment_size):((s+1)*segment_size)].copy(),stream=stream_list[s])
-          dZ_device = cuda.to_device(dZ[:,:,:,(s*segment_size):((s+1)*segment_size)].copy(),stream=stream_list[s])
+          dW_device = cuda.to_device((dW[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy(),stream=stream_list[s])
+          dZ_device = cuda.to_device((dZ[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy(),stream=stream_list[s])
 
           conv_step_backward3D_dW[blockspergrid,threadsperblock,stream_list[s]](A_prev_pad_device,dW_device,dZ_device,stride,fH,fW,n_C_prev)
           cuda.synchronize()
@@ -342,8 +342,8 @@ def Conv_backward3D_GPU(dZ,cacheL,threadsperblock=(8,8,8)):
         #backward db
         for s in range(number_of_streams):
 
-          db_device = cuda.to_device(db[:,:,:,(s*segment_size):((s+1)*segment_size)].copy(),stream=stream_list[s])
-          dZ_device = cuda.to_device(dZ[:,:,:,(s*segment_size):((s+1)*segment_size)].copy(),stream=stream_list[s])
+          db_device = cuda.to_device((db[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy(),stream=stream_list[s])
+          dZ_device = cuda.to_device((dZ[:,:,:,(s*segment_size):((s+1)*segment_size)]).copy(),stream=stream_list[s])
 
           conv_step_backward3D_db[blockspergrid,threadsperblock,stream_list[s]](db_device,dZ_device,bH,bW,b_C_prev)
           cuda.synchronize()
@@ -553,6 +553,8 @@ def conv_step_backward3D_db(db,dZ,Hlim,Wlim,Clim):
 
 
 #MaxPooling
+
+#Forward
 def MaxPooling_Forward3D(Z_prev,kernel_size,stride,threadsperblock=(8,8,8),padH=0,padW=0,padding = "Valid"):
 
    """
@@ -615,15 +617,15 @@ def MaxPooling_Forward3D(Z_prev,kernel_size,stride,threadsperblock=(8,8,8),padH=
    #MaxPooling Forward
    for s in range(number_of_streams):
 
-      Z_prev_pad_device = cuda.to_device(Z_prev_pad[s,:,:,:].copy(),stream=stream_list[s])
-      Z_device = cuda.to_device(Z[s,:,:,:].copy(),stream=stream_list[s])
+      Z_prev_pad_device = cuda.to_device((Z_prev_pad[s,:,:,:]).copy(),stream=stream_list[s])
+      Z_device = cuda.to_device((Z[s,:,:,:]).copy(),stream=stream_list[s])
 
       MaxPooling_Step_Forward3D[blockspergrid,threadsperblock,stream_list[s]](Z_prev_pad_device,Z_device,fH,fW,stride,n_H,n_W,n_C)
       cuda.synchronize()
 
       Z[s,:,:,:] = Z_device.copy_to_host(stream=stream_list[s])
 
-   cacheL = (Z_prev,kernel_size,stride,opadH,opadW)
+   cacheL = (Z_prev,Z,kernel_size,stride,opadH,opadW)
 
    return Z,cacheL
       
@@ -666,9 +668,125 @@ def MaxPooling_Step_Forward3D(img,Z,fH,fW,stride,Hlim,Wlim,Clim):
                max_val = tmp
 
       Z[n_H,n_W,n_C] = max_val
-            
 
+#Backward
+def MaxPooling_Backward3D(dZ,cacheL,threadsperblock=(8,8,8)):
+
+  """
+  dZ -- (m,n_H,n_W,n_C)
+  cacheL -- (Z_prev,kernel_size,stride,opadH,opadW)
+  """
+
+  #Get cacheL
+  Z_prev,Z,kernel_size,stride,opadH,opadW = cacheL
+
+  #Get kernel size
+  fH,fW = kernel_size
+
+  #set up -- dZ_prev -- (m,n_H_prev,n_W_prev,n_C)
+  dZ_prev = np.zeros_like(Z_prev)
+
+  #Get Original shape 
+  if opadH == 0 and opadW == 0:
+
+    Z_prev_pad = Z_prev.copy()
+    dZ_prev_pad = dZ_prev.copy()
+
+  else:
+
+    Z_prev_pad = zero_padding(Z_prev,opadH,opadW)
+    dZ_prev_pad = zeros_padding(dZ_prev,opadH,opadW)
+
+  #Set blockspergrid -- n_C_prev = n_C
+  m,n_H_prev_pad,n_W_prev_pad,n_C = dZ_prev_pad.shape
+  
+  blockspergrid_H = int(math.ceil(n_H_prev_pad/threadsperblock[0]))
+  blockspergrid_W = int(math.ceil(n_W_prev_pad/threadsperblock[1]))
+  blockspergrid_C = int(math.ceil(n_C/threadsperblock[2]))
+
+  blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
+      
+  #define stream
+  stream_list = []
+  number_of_streams = m
+
+  for i in range(number_of_streams):
+
+    stream_list.append(cuda.stream())
+
+  #Backward
+  for s in range(number_of_streams):
+
+    dZ_prev_pad_device = cuda.to_device((dZ_prev_pad[s,:,:,:]).copy(),stream = stream_list[s])
+    Z_prev_pad_device = cuda.to_device((Z_prev_pad[s,:,:,:]).copy(),stream = stream_list[s])
+
+    dZ_device = cuda.to_device((dZ[s,:,:,:]).copy(),stream=stream_list[s])
+    Z_device = cuda.to_device((Z[s,:,:,:]).copy(),stream=stream_list[s])
+
+    MaxPooling_Step_Backward3D[blockspergrid,threadsperblock,stream_list[s]](dZ_prev_pad_device,Z_prev_pad_device,dZ_device,Z_device,fH,fW,stride,n_H_prev_pad,n_W_prev_pad,n_C)
+    cuda.synchronize()
+
+    dZ_prev_pad[s,:,:,:] = dZ_prev_pad_device.copy_to_host(stream=stream_list[s])
+
+  #Get Result
+  if opadH == 0 and opadW == 0:
+
+    dZ_prev = dZ_prev_pad
+
+  elif opadH != 0 and opadW != 0:
+
+    dZ_prev = dZ_prev_pad[:,opadH:-opadH,opadW:-opadW,:]
+
+  elif opadH != 0 and opadW == 0:
+
+    dZ_prev = dZ_prev_pad[:,opadH:-opadH,:,:]
+
+  elif opadH == 0 and opadW != 0:
+
+    dZ_prev = dZ_prev_pad[:,:,opadW:-opadW,:]
+
+
+  return dZ_prev
+
+
+@cuda.jit("float64[:,:,:],float64[:,:,:],float64[:,:,:],float64[:,:,:],int64,int64,int64,int64,int64,int64")
+def MaxPooling_Step_Backward3D(dZ_prev,Z_prev,dZ,Z,fH,fW,stride,Hlim,Wlim,Clim):
+
+  """
+  dZ_prev -- (n_H_prev_pad,n_W_prev_pad,n_C)
+  Z_prev -- (n_H_prev_pad,n_W_prev_pad,n_C)
+  dZ -- (n_H,n_W,n_C)
+  Z -- (n_H,n_W,n_C)
+  """
+
+  n_H_prev_pad = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
+  n_W_prev_pad = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
+  n_C = cuda.threadIdx.z + cuda.blockIdx.z * cuda.blockDim.z
+
+  if (n_H_prev_pad < Hlim) and (n_W_prev_pad < Wlim) and (n_C < Clim):
+
+    for h in range(fH):
+
+      for w in range(fW):
+
+        n_H = (n_H_prev_pad - h)/stride
+        n_W = (n_W_prev_pad - w)/stride
+
+        if ((n_H - int(n_H)) == 0) and ((n_W - int(n_W)) == 0):
+
+          #convert back to int as nh and nw become float after division
+          n_H = int(n_H)
+          n_W = int(n_W)
+
+          if Z_prev[n_H_prev_pad,n_W_prev_pad,n_C] == Z[n_H,n_W,n_C]:
+
+            dZ_prev[n_H_prev_pad,n_W_prev_pad,n_C] = dZ_prev[n_H_prev_pad,n_W_prev_pad,n_C] + dZ[n_H,n_W,n_C]
+
+
+                     
 #Average Pooling
+
+#Forward
 def AvgPooling_Forward3D(Z_prev,kernel_size,stride,threadsperblock=(8,8,8),padH=0,padW=0,padding = "Valid"):
 
    """
@@ -728,18 +846,18 @@ def AvgPooling_Forward3D(Z_prev,kernel_size,stride,threadsperblock=(8,8,8),padH=
 
    blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
 
-   #MaxPooling Forward
+   #AvgPooling Forward
    for s in range(number_of_streams):
 
-      Z_prev_pad_device = cuda.to_device(Z_prev_pad[s,:,:,:].copy(),stream=stream_list[s])
-      Z_device = cuda.to_device(Z[s,:,:,:].copy(),stream=stream_list[s])
+      Z_prev_pad_device = cuda.to_device((Z_prev_pad[s,:,:,:]).copy(),stream=stream_list[s])
+      Z_device = cuda.to_device((Z[s,:,:,:]).copy(),stream=stream_list[s])
 
       AvgPooling_Step_Forward3D[blockspergrid,threadsperblock,stream_list[s]](Z_prev_pad_device,Z_device,fH,fW,stride,n_H,n_W,n_C)
       cuda.synchronize()
 
       Z[s,:,:,:] = Z_device.copy_to_host(stream=stream_list[s])
 
-   cacheL = (Z_prev,kernel_size,stride,opadH,opadW)
+   cacheL = (Z_prev,Z,kernel_size,stride,opadH,opadW)
 
    return Z,cacheL
 
@@ -773,12 +891,174 @@ def AvgPooling_Step_Forward3D(img,Z,fH,fW,stride,Hlim,Wlim,Clim):
 
       Z[n_H,n_W,n_C] = sum_val/(fH*fW)
 
+#Backward
+def AvgPooling_Backward3D(dZ,cacheL,threadsperblock=(8,8,8)):
+
+  """
+  dZ -- (m,n_H,n_W,n_C)
+  cacheL -- (Z_prev,kernel_size,stride,opadH,opadW)
+  """
+
+  #Get cacheL
+  Z_prev,Z,kernel_size,stride,opadH,opadW = cacheL
+
+  #Get kernel size
+  fH,fW = kernel_size
+
+  #set up -- dZ_prev -- (m,n_H_prev,n_W_prev,n_C)
+  dZ_prev = np.zeros_like(Z_prev)
+
+  #Get Original shape 
+  if opadH == 0 and opadW == 0:
+
+    dZ_prev_pad = dZ_prev.copy()
+
+  else:
+
+    dZ_prev_pad = zeros_padding(dZ_prev,opadH,opadW)
+
+  #Set blockspergrid -- n_C_prev = n_C
+  m,n_H_prev_pad,n_W_prev_pad,n_C = dZ_prev_pad.shape
+  
+  blockspergrid_H = int(math.ceil(n_H_prev_pad/threadsperblock[0]))
+  blockspergrid_W = int(math.ceil(n_W_prev_pad/threadsperblock[1]))
+  blockspergrid_C = int(math.ceil(n_C/threadsperblock[2]))
+
+  blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
+      
+  #define stream
+  stream_list = []
+  number_of_streams = m
+
+  for i in range(number_of_streams):
+
+    stream_list.append(cuda.stream())
+
+  #Backward
+  for s in range(number_of_streams):
+
+    dZ_prev_pad_device = cuda.to_device((dZ_prev_pad[s,:,:,:]).copy(),stream = stream_list[s])
+
+    dZ_device = cuda.to_device((dZ[s,:,:,:]).copy(),stream=stream_list[s])
+
+    AvgPooling_Step_Backward3D[blockspergrid,threadsperblock,stream_list[s]](dZ_prev_pad_device,dZ_device,fH,fW,stride,n_H_prev_pad,n_W_prev_pad,n_C)
+    cuda.synchronize()
+
+    dZ_prev_pad[s,:,:,:] = dZ_prev_pad_device.copy_to_host(stream=stream_list[s])
+
+  #Get Result
+  if opadH == 0 and opadW == 0:
+
+    dZ_prev = dZ_prev_pad
+
+  elif opadH != 0 and opadW != 0:
+
+    dZ_prev = dZ_prev_pad[:,opadH:-opadH,opadW:-opadW,:]
+
+  elif opadH != 0 and opadW == 0:
+
+    dZ_prev = dZ_prev_pad[:,opadH:-opadH,:,:]
+
+  elif opadH == 0 and opadW != 0:
+
+    dZ_prev = dZ_prev_pad[:,:,opadW:-opadW,:]
+
+
+  return dZ_prev
+
+
+@cuda.jit("float64[:,:,:],float64[:,:,:],int64,int64,int64,int64,int64,int64")
+def AvgPooling_Step_Backward3D(dZ_prev,dZ,fH,fW,stride,Hlim,Wlim,Clim):
+
+  """
+  dZ_prev -- (n_H_prev_pad,n_W_prev_pad,n_C)
+  dZ -- (n_H,n_W,n_C)
+  """
+
+  n_H_prev_pad = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
+  n_W_prev_pad = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
+  n_C = cuda.threadIdx.z + cuda.blockIdx.z * cuda.blockDim.z
+
+  if (n_H_prev_pad < Hlim) and (n_W_prev_pad < Wlim) and (n_C < Clim):
+
+    for h in range(fH):
+
+      for w in range(fW):
+
+        n_H = (n_H_prev_pad - h)/stride
+        n_W = (n_W_prev_pad - w)/stride
+
+        if ((n_H - int(n_H)) == 0) and ((n_W - int(n_W)) == 0):
+
+          #convert back to int as nh and nw become float after division
+          n_H = int(n_H)
+          n_W = int(n_W)
+
+          dZ_prev[n_H_prev_pad,n_W_prev_pad,n_C] = dZ_prev[n_H_prev_pad,n_W_prev_pad,n_C] + dZ[n_H,n_W,n_C]/(fH*fW)
+
                    
 if __name__ == "__main__":
   
         
         #Test
         import Layers
+        obj = Layers.PoolingLayer()
+
+        #AvgPooling Backward
+       
+        np.random.seed(1)
+    
+        A_prev = np.random.randn(5, 5, 3, 2)
+        fH,fW,stride = 2,2,1
+        dA = np.random.randn(5, 4, 2, 2)
+        
+        #GPU
+        Z,cacheL = AvgPooling_Forward3D(A_prev,(fH,fW),stride,threadsperblock=(8,8,8))
+        gpu_time = time.time()
+        dZ_prev = AvgPooling_Backward3D(dA,cacheL,threadsperblock=(8,8,8))
+        print(f"GPU:{time.time()-gpu_time}")
+        print('mean of dZ_prev = ', np.mean(dZ_prev)) 
+        print()
+
+        #CPU
+        A, cachePL = obj.Pooling_Forward(A_prev, stride,fH,fW, mode = "AVERAGE")
+        cpu_time = time.time()
+        dA_prev = obj.Pooling_Backward(dA, cachePL, mode = "AVERAGE")
+        print(f"CPU:{time.time()-cpu_time}")
+        print('mean of dA_prev = ', np.mean(dA_prev)) 
+        print()
+
+        print(np.allclose(dZ_prev,dA_prev))
+     
+
+        #MaxPooling Backward
+        """
+        A_prev = np.random.randn(5, 5, 3, 2)
+        fH,fW,stride = 2,2,1
+        dA = np.random.randn(5, 4, 2, 2)
+        """
+        """
+        A_prev = np.random.randn(2,60, 60, 3)
+        fH,fW,stride = 2,2,1
+        dA = np.random.randn(2, 59, 59, 3)
+        
+   
+        Z,cacheL = MaxPooling_Forward3D(A_prev,(fH,fW),stride,threadsperblock=(8,8,8))
+        gpu_time = time.time()
+        dZ_prev = MaxPooling_Backward3D(dA,cacheL,threadsperblock=(8,8,8))
+        print(f"GPU:{time.time()-gpu_time}")
+        print('mean of dZ_prev = ', np.mean(dZ_prev)) 
+        print()
+        
+        A, cachePL = obj.Pooling_Forward(A_prev,stride,fH,fW)
+        cpu_time = time.time()
+        dA_prev = obj.Pooling_Backward(dA, cachePL, mode = "MAX")
+        print(f"CPU:{time.time()-cpu_time}")
+        print('mean of dA_prev = ', np.mean(dA_prev)) 
+        print()
+
+        print(np.allclose(dZ_prev,dA_prev))
+        """
         
         #Average Pooling Forward
         """
@@ -790,7 +1070,8 @@ if __name__ == "__main__":
         np.random.seed(1)
         A_prev = np.random.randn(2, 540, 960, 512)
         stride,fH,fW = 2,3,3
-        
+        """
+        """
         obj = Layers.PoolingLayer()
 
         #GPU
@@ -809,6 +1090,7 @@ if __name__ == "__main__":
 
         print(np.allclose(Z,A))
         """
+        
         #MaxPooling Forward
         """
         np.random.seed(1)
