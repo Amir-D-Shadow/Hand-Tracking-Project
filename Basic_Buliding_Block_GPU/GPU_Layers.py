@@ -1023,6 +1023,68 @@ def AvgPooling_Step_Backward3D(dZ_prev,dZ,fH,fW,stride,Hlim,Wlim,Clim):
           dZ_prev[IMG_H,IMG_W,n_C] = dZ_prev[IMG_H,IMG_W,n_C] + dZ[nh,nw,n_C]/(fH*fW)
 
 
+#BatchNormalization
+
+#Helper Functions
+
+#sum
+@cuda.jit("float64[:,:,:,:],float64[:,:,:],int64,int64,int64,int64")
+def sum_axis0_3D(x,sum_x,m,Hlim,Wlim,Clim):
+
+  """
+  x -- (segment_size,n_H,n_W,n_C)
+  sum_x -- (n_H,n_W,n_C)
+  """
+
+  nh = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
+  nw = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
+  nc = cuda.threadIdx.z + cuda.blockDim.z * cuda.blockIdx.z
+
+  if (nh < Hlim) and (nw < Wlim) and (nc < Clim):
+
+    #sum over each sample via different axis
+    for i in range(m):
+
+      sum_x[nh,nw,nc] = sum_x[nh,nw,nc] + x[i,nh,nw,nc]
+
+#mean
+@cuda.jit("float64[:,:,:,:],float64[:,:,:],int64,int64,int64,int64")     
+def mean_axis0_3D(x,mean_x,m,Hlim,Wlim,Clim):
+
+  """
+  x -- (m,n_H,n_W,n_C)
+  mu -- mean
+  """
+
+  nh = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
+  nw = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
+  nc = cuda.threadIdx.z + cuda.blockDim.z * cuda.blockIdx.z
+
+  if (nh < Hlim) and (nw < Wlim) and (nc < Clim):
+
+    for i in range(m):
+
+      mean_x[nh,nw,nc] = mean_x[nh,nw,nc] + x[i,nh,nw,nc]/m
+
+#variance
+@cuda.jit("float64[:,:,:,:],float64[:,:,:],float64[:,:,:],int64,int64,int64,int64")
+def var_axis0_3D(x,var_x,mean_x,m,Hlim,Wlim,Clim):
+
+  """
+  x -- (m,n_H,n_W,n_C)
+  var_x -- (n_H,n_W,n_C)
+  mean_x -- (n_H,n_W,n_C)
+  """
+  nh = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
+  nw = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
+  nc = cuda.threadIdx.z + cuda.blockDim.z * cuda.blockIdx.z
+
+  if (nh < Hlim) and (nw < Wlim) and (nc < Clim):
+
+    for i in range(m):
+
+      var_x[nh,nw,nc] = var_x[nh,nw,nc] + (x[i,nh,nw,nc] - mean_x[nh,nw,nc])*(x[i,nh,nw,nc] - mean_x[nh,nw,nc])/m
+      
 
 if __name__ == "__main__":
 
@@ -1030,6 +1092,85 @@ if __name__ == "__main__":
         #Test
         import Layers
 
+        #BatchNormalization
+        """
+        #helper functions
+        A = np.random.randn(10,1080,1920,3)
+        A_device = cuda.to_device(A)
+
+        m,n_H,n_W,n_C = A.shape
+
+        threadsperblock = (8,8,8)
+
+        h = int(math.ceil(n_H/threadsperblock[0]))
+        w = int(math.ceil(n_W/threadsperblock[1]))
+        c = int(math.ceil(n_C/threadsperblock[2]))
+
+        blockspergrid = (h,w,c)
+
+        #sum
+        #GPU
+        sum_x = np.zeros((n_H,n_W,n_C))
+        sum_x_device = cuda.to_device(sum_x)
+        
+        gpu_time = time.time()
+        sum_axis0_3D[blockspergrid,threadsperblock](A_device,sum_x_device,m,n_H,n_W,n_C)
+        print(f"GPU:{time.time()-gpu_time}")
+
+        sum1 = sum_x_device.copy_to_host()
+
+        #CPU
+        cpu_time = time.time()
+        sum2 = np.sum(A,axis=0,keepdims=True)
+        print(f"CPU:{time.time()-cpu_time}")
+
+        print(np.allclose(sum1,sum2))
+        
+        #mean
+        #GPU
+        mean_x = np.zeros((n_H,n_W,n_C))
+        mean_x_device = cuda.to_device(mean_x)
+
+        gpu_time = time.time()
+        mean_axis0_3D[blockspergrid,threadsperblock](A_device,mean_x_device,m,n_H,n_W,n_C)
+        cuda.synchronize()
+        print(f"GPU:{time.time()-gpu_time}")
+
+        mean1 = mean_x_device.copy_to_host()
+
+        #CPU
+        cpu_time = time.time()
+        mean2 = np.mean(A,axis=0,keepdims=True)
+        print(f"CPU:{time.time()-cpu_time}")
+
+        print(np.allclose(mean1,mean2))
+
+        #var
+        #GPU
+        mean_x = np.zeros((n_H,n_W,n_C))
+        mean_x_device = cuda.to_device(mean_x)
+
+        mean_axis0_3D[blockspergrid,threadsperblock](A_device,mean_x_device,m,n_H,n_W,n_C)
+        cuda.synchronize()
+        
+        var_x = np.zeros((n_H,n_W,n_C))
+        var_x_device = cuda.to_device(var_x)
+
+        gpu_time = time.time()
+        var_axis0_3D[blockspergrid,threadsperblock](A_device,var_x_device,mean_x_device,m,n_H,n_W,n_C)
+        cuda.synchronize()
+        print(f"GPU:{time.time()-gpu_time}")
+
+        var1 = var_x_device.copy_to_host()
+
+        #CPU
+        cpu_time = time.time()
+        var2 = np.var(A,axis=0,keepdims=True)
+        print(f"CPU:{time.time()-cpu_time}")
+
+        print(np.allclose(var1,var2))
+        """
+       
         #Average Pooling Forward
         """
         np.random.seed(1)
@@ -1188,10 +1329,10 @@ if __name__ == "__main__":
         """
         obj = Layers.ConvLayer()
         np.random.seed(1)
-        img = np.random.randn(10,431,331,3)
-        W = np.random.randn(4,4,3,64)
+        img = np.random.randn(10,331,331,3)
+        W = np.random.randn(3,3,3,64)
         b = np.random.randn(1,1,1,64)
-        padH,padW,stride = 2,2,3
+        padH,padW,stride = 2,2,1
 
 
         Z,cacheL = Conv_Forward3D_GPU(img,W,b,stride,padH=2,padW=2,threadsperblock=(8,8,8))
@@ -1255,10 +1396,10 @@ if __name__ == "__main__":
 
         """
         #GPU
-        W = np.random.randn(3,3,3,128)
-        b = np.random.randn(1,1,1,128)
-        img = np.random.randn(3,1080,1920,3).astype(np.float64)
-        stride = 2
+        W = np.random.randn(3,3,3,64)
+        b = np.random.randn(1,1,1,64)
+        img = np.random.randn(10,331,331,3).astype(np.float64)
+        stride = 1
         gpu_time = time.time()
         Z,_ = Conv_Forward3D_GPU(img,W,b,stride,padH=0,padW=0,padding="Valid",threadsperblock=(4,4,32))
         cuda.synchronize()
