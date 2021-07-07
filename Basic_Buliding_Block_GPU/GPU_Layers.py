@@ -1188,7 +1188,7 @@ def dev_mean_3D(dmean,dvar,dz_norm,z,mean_z,var_z,epsilon,m,Hlim,Wlim,Clim):
   
   if (nh < Hlim) and (nw < Wlim) and (nc < Clim):
 
-    std_z = math.pow(var_z[nh,nw,nc]+epsilon,1.5)
+    std_z = math.sqrt(var_z[nh,nw,nc]+epsilon)
 
     for i in range(m):
 
@@ -1306,7 +1306,7 @@ def BatchNormalization_Forward3D(Z,batch_para,running_para,epsilon = 1e-10,threa
     var_axis0_3D[blockspergrid,threadsperblock](Z_device,var_x_device,mean_x_device,m,n_H,n_W,n_C)
     cuda.synchronize()
     var_x = var_x_device.copy_to_host()
-
+      
     #update running mean
     running_mean_device = cuda.to_device(running_mean)
     exp_weighted_avg_3D[blockspergrid,threadsperblock](running_mean_device,mean_x_device,momentum,n_H,n_W,n_C)
@@ -1399,7 +1399,7 @@ def BatchNormalization_Backward3D(dZ_S,cacheL,threadsperblock=(8,8,8)):
   dZ_NORM_device = cuda.to_device(dZ_NORM)
   dev_z_norm[blockspergrid,threadsperblock](dZ_NORM_device,dZ_S_device,gamma_device,m,n_H,n_W,n_C)
   cuda.synchronize()
-
+    
   #dbeta
   dbeta = np.zeros_like(beta)
   dbeta_device = cuda.to_device(dbeta)
@@ -1419,12 +1419,14 @@ def BatchNormalization_Backward3D(dZ_S,cacheL,threadsperblock=(8,8,8)):
   dvar_device = cuda.to_device(dvar)
   dev_var_3D[blockspergrid,threadsperblock](dvar_device,Z_device,mean_x_device,var_x_device,dZ_NORM_device,epsilon,m,n_H,n_W,n_C)
   cuda.synchronize()
+  dvar = dvar_device.copy_to_host()
 
   #dmean
   dmean = np.zeros_like(mean_x)
   dmean_device = cuda.to_device(dmean)
   dev_mean_3D[blockspergrid,threadsperblock](dmean_device,dvar_device,dZ_NORM_device,Z_device,mean_x_device,var_x_device,epsilon,m,n_H,n_W,n_C)
   cuda.synchronize()
+  dmean = dmean_device.copy_to_host()
 
   #dZ
   dZ = np.zeros_like(Z)
@@ -1434,14 +1436,80 @@ def BatchNormalization_Backward3D(dZ_S,cacheL,threadsperblock=(8,8,8)):
   dZ = dZ_device.copy_to_host()
 
   return dZ,dgamma,dbeta
-    
+  
 if __name__ == "__main__":
 
 
         #Test
         import Layers
-
+        
         #BatchNormalization
+        """
+        obj= Layers.Batch_Normalization_Layer()
+        #backward
+        Z = np.random.randn(7,1080,1920,3)
+        dZ_S = np.random.randn(7,1080,1920,3)
+        m,n_H,n_W,n_C = Z.shape
+
+        batch_para = {}
+        running_para = {}
+
+        running_para["running_mean"] = np.zeros((n_H,n_W,n_C)).astype("float64")
+        running_para["running_var"] = np.zeros((n_H,n_W,n_C)).astype("float64")
+        running_para["momentum"] = 0.9
+
+        batch_para["gamma"] = np.random.randn(n_H,n_W,n_C)
+        batch_para["beta"] = np.random.randn(n_H,n_W,n_C)
+
+        #GPU
+        Z_S,cacheL = BatchNormalization_Forward3D(Z,batch_para,running_para)
+        gpu_time = time.time()
+        dZ,dgamma,dbeta = BatchNormalization_Backward3D(dZ_S,cacheL,threadsperblock=(8,8,8))
+        print(f"GPU: {time.time()-gpu_time} ")
+
+        #CPU
+        Z_C,cacheBL = obj.batch_forward(Z,batch_para,running_para)
+        cpu_time = time.time()
+        dZc,dgammac,dbetac = obj.batch_backward(dZ_S,cacheBL)
+        print(f"CPU: {time.time() - cpu_time}")
+        
+        print(f"dZ:{np.allclose(dZ,dZc)}")
+        print(f"dgamma:{np.allclose(dgamma,dgammac)}")
+        print(f"dbeta:{np.allclose(dbeta,dbetac)}")
+        """
+        
+        #forward
+        """
+        obj= Layers.Batch_Normalization_Layer()
+
+        #GPU
+        Z = np.random.randn(10,1080,1920,3)
+
+        m,n_H,n_W,n_C = Z.shape
+
+        batch_para = {}
+        running_para = {}
+
+        running_para["running_mean"] = np.zeros((n_H,n_W,n_C)).astype("float64")
+        running_para["running_var"] = np.zeros((n_H,n_W,n_C)).astype("float64")
+        running_para["momentum"] = 0.9
+
+        batch_para["gamma"] = np.random.randn(n_H,n_W,n_C)
+        batch_para["beta"] = np.random.randn(n_H,n_W,n_C)
+
+        #GPU
+        gpu_time = time.time()
+        k1,cacheL = BatchNormalization_Forward3D(Z,batch_para,running_para)
+        print(f"GPU: {time.time()-gpu_time} ")
+
+        #CPU
+        cpu_time = time.time()
+        k2,cacheBL = obj.batch_forward(Z,batch_para,running_para)
+        print(f"CPU: {time.time() - cpu_time}")
+
+        print(np.allclose(k1,k2))
+        """
+        
         """
         #helper functions
         A = np.random.randn(10,1080,1920,3)
