@@ -1024,127 +1024,235 @@ def AvgPooling_Step_Backward3D(dZ_prev,dZ,fH,fW,stride,Hlim,Wlim,Clim):
 
 
 #BatchNormalization
-
-#Helper Functions
-
-#sum
-@cuda.jit("float64[:,:,:,:],float64[:,:,:],int64,int64,int64,int64")
-def sum_axis0_3D(x,sum_x,m,Hlim,Wlim,Clim):
-
-  """
-  x -- (m,n_H,n_W,n_C)
-  sum_x -- (n_H,n_W,n_C)
-  """
-
-  nh = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
-  nw = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
-  nc = cuda.threadIdx.z + cuda.blockDim.z * cuda.blockIdx.z
-
-  if (nh < Hlim) and (nw < Wlim) and (nc < Clim):
-
-    #sum over each sample via different axis
-    for i in range(m):
-
-      sum_x[nh,nw,nc] = sum_x[nh,nw,nc] + x[i,nh,nw,nc]
-
-#mean
-@cuda.jit("float64[:,:,:,:],float64[:,:,:],int64,int64,int64,int64")     
-def mean_axis0_3D(x,mean_x,m,Hlim,Wlim,Clim):
-
-  """
-  x -- (m,n_H,n_W,n_C)
-  mu -- mean
-  """
-
-  nh = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
-  nw = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
-  nc = cuda.threadIdx.z + cuda.blockDim.z * cuda.blockIdx.z
-
-  if (nh < Hlim) and (nw < Wlim) and (nc < Clim):
-
-    for i in range(m):
-
-      mean_x[nh,nw,nc] = mean_x[nh,nw,nc] + x[i,nh,nw,nc]/m
-
-#variance
-@cuda.jit("float64[:,:,:,:],float64[:,:,:],float64[:,:,:],int64,int64,int64,int64")
-def var_axis0_3D(x,var_x,mean_x,m,Hlim,Wlim,Clim):
-
-  """
-  x -- (m,n_H,n_W,n_C)
-  var_x -- (n_H,n_W,n_C)
-  mean_x -- (n_H,n_W,n_C)
-  """
-  nh = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
-  nw = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
-  nc = cuda.threadIdx.z + cuda.blockDim.z * cuda.blockIdx.z
-
-  if (nh < Hlim) and (nw < Wlim) and (nc < Clim):
-
-    for i in range(m):
-
-      var_x[nh,nw,nc] = var_x[nh,nw,nc] + (x[i,nh,nw,nc] - mean_x[nh,nw,nc])*(x[i,nh,nw,nc] - mean_x[nh,nw,nc])/m
-      
-
+          
+#BN Forward (sub function)
 #Z_norm
-@cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:],float64[:,:,:],float64,int64,int64,int64,int64")
-def Z_norm_3D(x,z_norm,var_x,mean_x,epsilon,m,Hlim,Wlim,Clim):
+@cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:],float64[:],float64,int64,int64,int64")
+def Z_norm_3D(x,z_norm,var_x,mean_x,epsilon,mlim,Hlim,Wlim):
 
   """
-  x -- (m,n_H,n_W,n_C)
-  z_norm -- (m,n_H,n_W,n_C)
-  var_x -- (n_H,n_W,n_C)
-  mean_x -- (n_H,n_W,n_C)
+  x -- (m,n_H,n_W,segment_size)
+  z_norm -- (m,n_H,n_W,segment_size)
+  var_x -- (segment_size,1)
+  mean_x -- (segment_size,1)
   """
 
-  nh = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
-  nw = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
-  nc = cuda.threadIdx.z + cuda.blockDim.z * cuda.blockIdx.z
+  i = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
+  nh = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
+  nw = cuda.threadIdx.z + cuda.blockDim.z * cuda.blockIdx.z
 
-  if (nh < Hlim) and (nw < Wlim) and (nc < Clim):
+  if (i < mlim) and (nh < Hlim) and (nw < Wlim):
 
-    for i in range(m):
+    segment_size = x.shape[-1]
 
-      z_norm[i,nh,nw,nc] = (x[i,nh,nw,nc] - mean_x[nh,nw,nc])/math.sqrt(var_x[nh,nw,nc]+epsilon)
+    cuda.syncthreads()
+
+    for nc in range(segment_size):
+
+      z_norm[i,nh,nw,nc] = (x[i,nh,nw,nc] - mean_x[nc])/math.sqrt(var_x[nc]+epsilon)
+
 
 #Z_S
-@cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:,:,:],float64[:,:,:],int64,int64,int64,int64")
-def Z_S_3D(z_s,z_norm,gamma,beta,m,Hlim,Wlim,Clim):
+@cuda.jit("float64[:,:,:,:],float64[:,:,:,:],float64[:],float64[:],int64,int64,int64")
+def Z_S_3D(z_s,z_norm,gamma,beta,mlim,Hlim,Wlim):
 
   """
   z_s -- (m,n_H,n_W,n_C)
   z_norm -- (m,n_H,n_W,n_C)
-  gamma -- (n_H,n_W,n_C)
-  beta -- (n_H,n_W,n_C)
+  gamma -- (segment_size,1)
+  beta -- (segment_size,1)
   """
 
-  nh = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
-  nw = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
-  nc = cuda.threadIdx.z + cuda.blockDim.z * cuda.blockIdx.z
+  i = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
+  nh = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
+  nw = cuda.threadIdx.z + cuda.blockDim.z * cuda.blockIdx.z
 
-  if (nh < Hlim) and (nw < Wlim) and (nc < Clim):
+  if (i < mlim) and (nh < Hlim) and (nw < Wlim):
 
-    for i in range(m):
+    segment_size = z_s.shape[-1]
 
-      z_s[i,nh,nw,nc] = gamma[nh,nw,nc] * z_norm[i,nh,nw,nc] + beta[nh,nw,nc]
+    for nc in range(segment_size):
+
+      z_s[i,nh,nw,nc] = gamma[nc] * z_norm[i,nh,nw,nc] + beta[nc]
+      
 
 #Exponentially Weighted Average
-@cuda.jit("float64[:,:,:],float64[:,:,:],float64,int64,int64,int64")
-def exp_weighted_avg_3D(running_x,x,momentum,Hlim,Wlim,Clim):
+@cuda.jit("float64[:],float64[:],float64,int64")
+def exp_weighted_avg_3D(running_x,x,momentum,Clim):
 
   """
-  running_x -- (n_H,n_W,n_C)
-  x -- (n_H,n_W,n_C)
+  running_x -- (n_C,1)
+  x -- (n_C,1)
   """
 
-  nh = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
-  nw = cuda.threadIdx.y + cuda.blockDim.y * cuda.blockIdx.y
-  nc = cuda.threadIdx.z + cuda.blockDim.z * cuda.blockIdx.z
+  nc = cuda.threadIdx.x + cuda.blockDim.x * cuda.blockIdx.x
 
-  if (nh < Hlim) and (nw < Wlim) and (nc < Clim):
+  if (nc < Clim):
 
-    running_x[nh,nw,nc] = momentum * running_x[nh,nw,nc] + (1 - momentum) * x[nh,nw,nc]
+    running_x[nc] = momentum * running_x[nc] + (1 - momentum) * x[nc]
 
+#BN Forward
+def BatchNormalization_Forward3D(Z,batch_para,running_para,epsilon = 1e-10,threadsperblock = (8,8,8),mode="TRAIN"):
+
+  """
+  Z -- (m,n_H,n_W,n_C)
+  running_para -- {running_mean,running_var,momentum}
+  batch_para -- {gamma,beta}
+  gamma -- (n_C,1)
+  beta -- (n_C,1)
+  """
+
+  #set up
+  running_mean = running_para["running_mean"]
+  running_var = running_para["running_var"]
+  momentum = running_para["momentum"]
+
+  gamma = batch_para["gamma"]
+  beta = batch_para["beta"]
+
+  #Get shape Z
+  m,n_H,n_W,n_C = Z.shape
+
+  #blockspergrid
+  blockspergrid_m = int(math.ceil(m/threadsperblock[0]))
+  blockspergrid_H = int(math.ceil(n_H/threadsperblock[1]))
+  blockspergrid_W = int(math.ceil(n_W/threadsperblock[2]))
+
+  blockspergrid = (blockspergrid_m,blockspergrid_H,blockspergrid_W)
+
+  #define stream
+  segment_size = threadsperblock[-1]
+  number_of_streams = int(math.ceil(n_C/segment_size))
+  stream_list = []
+
+  for i in range(number_of_streams):
+
+    stream_list.append(cuda.stream())
+
+  #Forward
+  if mode == "TRAIN":
+
+    #calculate mean
+    mean_x = np.mean(Z,axis=(0,1,2)).reshape(n_C,1)
+
+    #calculate var
+    var_x = np.var(Z,axis=(0,1,2)).reshape(n_C,1)
+    
+    #update running mean
+    for s in range(number_of_streams):
+
+      start_idx = s * segment_size
+      end_idx = (s + 1) * segment_size
+
+      if end_idx > n_C:
+
+        end_idx = n_C
+      
+      running_mean_device = cuda.to_device((running_mean[start_idx:end_idx,0]).copy(),stream=stream_list[s])
+      mean_x_device = cuda.to_device((mean_x[start_idx:end_idx,0]).copy(),stream=stream_list[s])
+      
+      exp_weighted_avg_3D[blockspergrid,threadsperblock,stream_list[s]](running_mean_device,mean_x_device,momentum,end_idx-start_idx)
+      cuda.synchronize()
+      running_para["running_mean"][start_idx:end_idx,0] = running_mean_device.copy_to_host(stream=stream_list[s])
+
+    #update running var
+    for s in range(number_of_streams):
+
+      start_idx = s * segment_size
+      end_idx = (s + 1) * segment_size
+
+      if end_idx > n_C:
+
+        end_idx = n_C
+      
+      running_var_device = cuda.to_device((running_var[start_idx:end_idx,0]).copy(),stream=stream_list[s])
+      var_x_device = cuda.to_device((var_x[start_idx:end_idx,0]).copy(),stream=stream_list[s])
+      
+      exp_weighted_avg_3D[blockspergrid,threadsperblock,stream_list[s]](running_var_device,var_x_device,momentum,end_idx-start_idx)
+      cuda.synchronize()
+      running_para["running_var"][start_idx:end_idx,0] = running_var_device.copy_to_host(stream=stream_list[s])
+    
+    #Calculate Z_norm
+    Z_NORM = np.zeros_like(Z)
+
+    for s in range(number_of_streams):
+
+      start_idx = s * segment_size
+      end_idx = (s + 1) * segment_size
+
+      Z_device = cuda.to_device((Z[:,:,:,start_idx:end_idx]).copy(),stream=stream_list[s])
+      Z_NORM_device = cuda.to_device((Z_NORM[:,:,:,start_idx:end_idx]).copy(),stream=stream_list[s])
+      mean_x_device = cuda.to_device((mean_x[start_idx:end_idx,0]).copy(),stream=stream_list[s])
+      var_x_device = cuda.to_device((var_x[start_idx:end_idx,0]).copy(),stream=stream_list[s])
+      
+      Z_norm_3D[blockspergrid,threadsperblock,stream_list[s]](Z_device,Z_NORM_device,var_x_device,mean_x_device,epsilon,m,n_H,n_W)
+      cuda.synchronize()
+      Z_NORM[:,:,:,start_idx:end_idx] = Z_NORM_device.copy_to_host(stream=stream_list[s])
+
+    #Calculate Z_S
+    Z_S = np.zeros_like(Z)
+
+    for s in range(number_of_streams):
+
+      start_idx = s * segment_size
+      end_idx = (s + 1) * segment_size
+      
+      Z_S_device = cuda.to_device((Z_S[:,:,:,start_idx:end_idx]).copy(),stream=stream_list[s])
+      Z_NORM_device = cuda.to_device((Z_NORM[:,:,:,start_idx:end_idx]).copy(),stream=stream_list[s])
+      gamma_device = cuda.to_device((gamma[start_idx:end_idx,0]).copy(),stream=stream_list[s])
+      beta_device = cuda.to_device((beta[start_idx:end_idx,0]).copy(),stream=stream_list[s])
+      
+      Z_S_3D[blockspergrid,threadsperblock,stream_list[s]](Z_S_device,Z_NORM_device,gamma_device,beta_device,m,n_H,n_W)
+      cuda.synchronize()
+      Z_S[:,:,:,start_idx:end_idx] = Z_S_device.copy_to_host(stream=stream_list[s])
+
+    #Save cache for backpropagation
+    cacheL = (Z,Z_NORM,Z_S,gamma,beta,epsilon,mean_x,var_x)
+
+  else:
+    
+    #calculate Z_norm
+    Z_NORM = np.zeros_like(Z)
+    
+    for s in range(number_of_streams):
+
+      start_idx = s * segment_size
+      end_idx = (s + 1) * segment_size
+      
+      running_mean_device = cuda.to_device(running_mean[start_idx:end_idx,0].copy(),stream=stream_list[s])
+      running_var_device = cuda.to_device(running_var[start_idx:end_idx,0].copy(),stream=stream_list[s])
+      
+      Z_NORM_device = cuda.to_device(Z_NORM[:,:,:,start_idx:end_idx].copy(),stream=stream_list[s])
+      Z_device = cuda.to_device((Z[:,:,:,start_idx:end_idx]).copy(),stream=stream_list[s])
+      
+      Z_norm_3D[blockspergrid,threadsperblock](Z_device,Z_NORM_device,running_var_device,running_mean_device,epsilon,m,n_H,n_W)
+      cuda.synchronize()
+
+      Z_NORM[:,:,:,start_idx:end_idx] = Z_NORM_device.copy_to_host(stream=stream_list[s])
+
+    #Calculate Z_S
+    Z_S = np.zeros_like(Z)
+
+    for s in range(number_of_streams):
+
+      start_idx = s * segment_size
+      end_idx = (s + 1) * segment_size
+      
+      Z_S_device = cuda.to_device((Z_S[:,:,:,start_idx:end_idx]).copy(),stream=stream_list[s])
+      Z_NORM_device = cuda.to_device((Z_NORM[:,:,:,start_idx:end_idx]).copy(),stream=stream_list[s])
+      gamma_device = cuda.to_device((gamma[start_idx:end_idx,0]).copy(),stream=stream_list[s])
+      beta_device = cuda.to_device((beta[start_idx:end_idx,0]).copy(),stream=stream_list[s])
+      
+      Z_S_3D[blockspergrid,threadsperblock](Z_S_device,Z_NORM_device,gamma_device,beta_device,m,n_H,n_W)
+      cuda.synchronize()
+      Z_S[:,:,:,start_idx:end_idx] = Z_S_device.copy_to_host(stream=stream_list[s])
+
+    cacheL = ()
+    
+    
+  return Z_S,cacheL
+
+#BN backward (sub function)
 # derivative variance
 @cuda.jit("float64[:,:,:],float64[:,:,:,:],float64[:,:,:],float64[:,:,:],float64[:,:,:,:],float64,int64,int64,int64,int64")
 def dev_var_3D(dvar,z,mean_z,var_z,dz_norm,epsilon,m,Hlim,Wlim,Clim):
@@ -1258,185 +1366,8 @@ def dev_z_norm(dz_norm,dz_s,gamma,m,Hlim,Wlim,Clim):
     for i in range(m):
 
       dz_norm[i,nh,nw,nc] = gamma[nh,nw,nc] * dz_s[i,nh,nw,nc]
-  
 
-#BN Forward
-def BatchNormalization_Forward3D(Z,batch_para,running_para,epsilon = 1e-10,threadsperblock = (8,8,8),mode="TRAIN"):
-
-  """
-  Z -- (m,n_H,n_W,n_C)
-  running_para -- {running_mean,running_var,momentum}
-  batch_para -- {gamma,beta}
-  gamma -- (n_H,n_W,n_C)
-  beta -- (n_H,n_W,n_C)
-  """
-
-  #set up
-  running_mean = running_para["running_mean"]
-  running_var = running_para["running_var"]
-  momentum = running_para["momentum"]
-
-  gamma = batch_para["gamma"]
-  beta = batch_para["beta"]
-
-  #Get shape Z
-  m,n_H,n_W,n_C = Z.shape
-  Z_device = cuda.to_device(Z)
-
-  #blockspergrid
-  blockspergrid_H = int(math.ceil(n_H/threadsperblock[0]))
-  blockspergrid_W = int(math.ceil(n_W/threadsperblock[1]))
-  blockspergrid_C = int(math.ceil(n_C/threadsperblock[2]))
-
-  blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
-
-  #Forward
-  if mode == "TRAIN":
-
-    #calculate mean
-    mean_x = np.zeros((n_H,n_W,n_C))
-    mean_x_device = cuda.to_device(mean_x)
-    mean_axis0_3D[blockspergrid,threadsperblock](Z_device,mean_x_device,m,n_H,n_W,n_C)
-    cuda.synchronize()
-    mean_x = mean_x_device.copy_to_host()
-
-    #calculate var
-    var_x = np.zeros((n_H,n_W,n_C))
-    var_x_device = cuda.to_device(var_x)
-    var_axis0_3D[blockspergrid,threadsperblock](Z_device,var_x_device,mean_x_device,m,n_H,n_W,n_C)
-    cuda.synchronize()
-    var_x = var_x_device.copy_to_host()
       
-    #update running mean
-    running_mean_device = cuda.to_device(running_mean)
-    exp_weighted_avg_3D[blockspergrid,threadsperblock](running_mean_device,mean_x_device,momentum,n_H,n_W,n_C)
-    cuda.synchronize()
-    running_para["running_mean"] = running_mean_device.copy_to_host()
-
-    #update running var
-    running_var_device = cuda.to_device(running_var)
-    exp_weighted_avg_3D[blockspergrid,threadsperblock](running_var_device,var_x_device,momentum,n_H,n_W,n_C)
-    cuda.synchronize()
-    running_para["running_var"] = running_var_device.copy_to_host()
-    
-    #Calculate Z_norm
-    Z_NORM = np.zeros_like(Z)
-    Z_NORM_device = cuda.to_device(Z_NORM)
-    Z_norm_3D[blockspergrid,threadsperblock](Z_device,Z_NORM_device,var_x_device,mean_x_device,epsilon,m,n_H,n_W,n_C)
-    cuda.synchronize()
-    Z_NORM = Z_NORM_device.copy_to_host()
-
-    #Calculate Z_S
-    Z_S = np.zeros_like(Z)
-    Z_S_device = cuda.to_device(Z_S)
-    Z_S_3D[blockspergrid,threadsperblock](Z_S_device,Z_NORM_device,gamma,beta,m,n_H,n_W,n_C)
-    cuda.synchronize()
-    Z_S = Z_S_device.copy_to_host()
-
-    #Save cache for backpropagation
-    cacheL = (Z,Z_NORM,Z_S,gamma,beta,epsilon,mean_x,var_x)
-
-  else:
-
-    #calculate Z_norm
-    running_mean_device = cuda.to_device(running_mean)
-    running_var_device = cuda.to_device(running_var)
-
-    Z_NORM = np.zeros_like(Z)
-    Z_NORM_device = cuda.to_device(Z_NORM)
-    Z_norm_3D[blockspergrid,threadsperblock](Z_device,Z_NORM_device,running_var_x_device,running_mean_x_device,epsilon,m,n_H,n_W,n_C)
-    cuda.synchronize()
-
-    #Calculate Z_S
-    Z_S = np.zeros_like(Z)
-    Z_S_device = cuda.to_device(Z_S)
-    Z_S_3D[blockspergrid,threadsperblock](Z_S_device,Z_NORM_device,gamma,beta,m,n_H,n_W,n_C)
-    cuda.synchronize()
-    Z_S = Z_S_device.copy_to_host()
-
-    cacheL = ()
-
-  return Z_S,cacheL
-
-#BN Backward
-def BatchNormalization_Backward3D(dZ_S,cacheL,threadsperblock=(8,8,8)):
-
-  """
-  dZ_S -- (m,n_H,n_W,n_C)
-  cacheL -- (Z,Z_NORM,Z_S,gamma,beta,epsilon,mean_x,var_x)
-  gamma -- (n_H,n_W,n_C)
-  beta -- (n_H,n_W,n_C)
-  """
-  #Get cache
-  Z,Z_NORM,Z_S,gamma,beta,epsilon,mean_x,var_x = cacheL
-
-  #Move gamma and beta to GPU
-  gamma_device = cuda.to_device(gamma)
-  beta_device = cuda.to_device(beta)
-
-  #Move Z,Z_S,Z_NORM to GPU
-  Z_S_device = cuda.to_device(Z_S)
-  Z_NORM_device = cuda.to_device(Z_NORM)
-  Z_device = cuda.to_device(Z)
-
-  #Move mean_x,var_x to gpu
-  mean_x_device = cuda.to_device(mean_x)
-  var_x_device = cuda.to_device(var_x)
-  
-  #Get shape dZ_S
-  m,n_H,n_W,n_C = dZ_S.shape
-  dZ_S_device = cuda.to_device(dZ_S)
-
-  #Define Blockspergrid
-  blockspergrid_H = int(math.ceil(n_H/threadsperblock[0]))
-  blockspergrid_W = int(math.ceil(n_W/threadsperblock[1]))
-  blockspergrid_C = int(math.ceil(n_C/threadsperblock[2]))
-
-  blockspergrid = (blockspergrid_H,blockspergrid_W,blockspergrid_C)
-
-  #dZ_NORM
-  dZ_NORM = np.zeros_like(dZ_S)
-  dZ_NORM_device = cuda.to_device(dZ_NORM)
-  dev_z_norm[blockspergrid,threadsperblock](dZ_NORM_device,dZ_S_device,gamma_device,m,n_H,n_W,n_C)
-  cuda.synchronize()
-    
-  #dbeta
-  dbeta = np.zeros_like(beta)
-  dbeta_device = cuda.to_device(dbeta)
-  sum_axis0_3D[blockspergrid,threadsperblock](dZ_S_device,dbeta_device,m,n_H,n_W,n_C)
-  cuda.synchronize()
-  dbeta = dbeta_device.copy_to_host()
-
-  #dgamma
-  dgamma = np.zeros_like(gamma)
-  dgamma_device = cuda.to_device(dgamma)
-  dev_gamma_3D[blockspergrid,threadsperblock](dgamma_device,dZ_S_device,Z_NORM_device,m,n_H,n_W,n_C)
-  cuda.synchronize()
-  dgamma = dgamma_device.copy_to_host()
-
-  #dvar
-  dvar = np.zeros_like(var_x)
-  dvar_device = cuda.to_device(dvar)
-  dev_var_3D[blockspergrid,threadsperblock](dvar_device,Z_device,mean_x_device,var_x_device,dZ_NORM_device,epsilon,m,n_H,n_W,n_C)
-  cuda.synchronize()
-  dvar = dvar_device.copy_to_host()
-
-  #dmean
-  dmean = np.zeros_like(mean_x)
-  dmean_device = cuda.to_device(dmean)
-  dev_mean_3D[blockspergrid,threadsperblock](dmean_device,dvar_device,dZ_NORM_device,Z_device,mean_x_device,var_x_device,epsilon,m,n_H,n_W,n_C)
-  cuda.synchronize()
-  dmean = dmean_device.copy_to_host()
-
-  #dZ
-  dZ = np.zeros_like(Z)
-  dZ_device = cuda.to_device(dZ)
-  dev_z_3D[blockspergrid,threadsperblock](dZ_device,dmean_device,dvar_device,dZ_NORM_device,Z_device,mean_x_device,var_x_device,epsilon,m,n_H,n_W,n_C)
-  cuda.synchronize()
-  dZ = dZ_device.copy_to_host()
-
-  return dZ,dgamma,dbeta
-  
 if __name__ == "__main__":
 
 
@@ -1444,6 +1375,7 @@ if __name__ == "__main__":
         import Layers
         
         #BatchNormalization
+
         """
         obj= Layers.Batch_Normalization_Layer()
         #backward
@@ -1479,115 +1411,43 @@ if __name__ == "__main__":
         """
         
         #forward
-        """
+        
         obj= Layers.Batch_Normalization_Layer()
 
         #GPU
-        Z = np.random.randn(10,1080,1920,3)
+        Z = np.random.randn(32,308,492,32)
 
         m,n_H,n_W,n_C = Z.shape
 
         batch_para = {}
         running_para = {}
 
-        running_para["running_mean"] = np.zeros((n_H,n_W,n_C)).astype("float64")
-        running_para["running_var"] = np.zeros((n_H,n_W,n_C)).astype("float64")
+        running_para["running_mean"] = np.zeros((n_C,1)).astype("float64")
+        running_para["running_var"] = np.zeros((n_C,1)).astype("float64")
         running_para["momentum"] = 0.9
 
-        batch_para["gamma"] = np.random.randn(n_H,n_W,n_C)
-        batch_para["beta"] = np.random.randn(n_H,n_W,n_C)
+        batch_para["gamma"] = np.random.randn(n_C,1)
+        batch_para["beta"] = np.random.randn(n_C,1)
 
         #GPU
         gpu_time = time.time()
-        k1,cacheL = BatchNormalization_Forward3D(Z,batch_para,running_para)
+        k1,cacheL = BatchNormalization_Forward3D(Z,batch_para,running_para,mode="test")
         print(f"GPU: {time.time()-gpu_time} ")
-
+        
         #CPU
+        running_para["running_mean"] = running_para["running_mean"].reshape(1,1,1,n_C)
+        running_para["running_var"] = running_para["running_var"].reshape(1,1,1,n_C)
+        running_para["momentum"] = 0.9
+
+        batch_para["gamma"] = batch_para["gamma"].reshape(1,1,1,n_C)
+        batch_para["beta"] = batch_para["beta"].reshape(1,1,1,n_C)
         cpu_time = time.time()
-        k2,cacheBL = obj.batch_forward(Z,batch_para,running_para)
+        k2,cacheBL = obj.batch_forward(Z,batch_para,running_para,mode="test")
         print(f"CPU: {time.time() - cpu_time}")
 
         print(np.allclose(k1,k2))
-        """
         
-        """
-        #helper functions
-        A = np.random.randn(10,1080,1920,3)
-        A_device = cuda.to_device(A)
-
-        m,n_H,n_W,n_C = A.shape
-
-        threadsperblock = (8,8,8)
-
-        h = int(math.ceil(n_H/threadsperblock[0]))
-        w = int(math.ceil(n_W/threadsperblock[1]))
-        c = int(math.ceil(n_C/threadsperblock[2]))
-
-        blockspergrid = (h,w,c)
-
-        #sum
-        #GPU
-        sum_x = np.zeros((n_H,n_W,n_C))
-        sum_x_device = cuda.to_device(sum_x)
-        
-        gpu_time = time.time()
-        sum_axis0_3D[blockspergrid,threadsperblock](A_device,sum_x_device,m,n_H,n_W,n_C)
-        print(f"GPU:{time.time()-gpu_time}")
-
-        sum1 = sum_x_device.copy_to_host()
-
-        #CPU
-        cpu_time = time.time()
-        sum2 = np.sum(A,axis=0,keepdims=True)
-        print(f"CPU:{time.time()-cpu_time}")
-
-        print(np.allclose(sum1,sum2))
-        
-        #mean
-        #GPU
-        mean_x = np.zeros((n_H,n_W,n_C))
-        mean_x_device = cuda.to_device(mean_x)
-
-        gpu_time = time.time()
-        mean_axis0_3D[blockspergrid,threadsperblock](A_device,mean_x_device,m,n_H,n_W,n_C)
-        cuda.synchronize()
-        print(f"GPU:{time.time()-gpu_time}")
-
-        mean1 = mean_x_device.copy_to_host()
-
-        #CPU
-        cpu_time = time.time()
-        mean2 = np.mean(A,axis=0,keepdims=True)
-        print(f"CPU:{time.time()-cpu_time}")
-
-        print(np.allclose(mean1,mean2))
-
-        #var
-        #GPU
-        mean_x = np.zeros((n_H,n_W,n_C))
-        mean_x_device = cuda.to_device(mean_x)
-
-        mean_axis0_3D[blockspergrid,threadsperblock](A_device,mean_x_device,m,n_H,n_W,n_C)
-        cuda.synchronize()
-        
-        var_x = np.zeros((n_H,n_W,n_C))
-        var_x_device = cuda.to_device(var_x)
-
-        gpu_time = time.time()
-        var_axis0_3D[blockspergrid,threadsperblock](A_device,var_x_device,mean_x_device,m,n_H,n_W,n_C)
-        cuda.synchronize()
-        print(f"GPU:{time.time()-gpu_time}")
-
-        var1 = var_x_device.copy_to_host()
-
-        #CPU
-        cpu_time = time.time()
-        var2 = np.var(A,axis=0,keepdims=True)
-        print(f"CPU:{time.time()-cpu_time}")
-
-        print(np.allclose(var1,var2))
-        """
-       
+         
         #Average Pooling Forward
         """
         np.random.seed(1)
