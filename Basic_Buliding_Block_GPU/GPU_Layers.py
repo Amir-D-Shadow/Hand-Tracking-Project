@@ -1139,38 +1139,10 @@ def BatchNormalization_Forward3D(Z,batch_para,running_para,epsilon = 1e-10,threa
     var_x = np.var(Z,axis=(0,1,2)).reshape(n_C,1)
     
     #update running mean
-    for s in range(number_of_streams):
-
-      start_idx = s * segment_size
-      end_idx = (s + 1) * segment_size
-
-      if end_idx > n_C:
-
-        end_idx = n_C
-      
-      running_mean_device = cuda.to_device((running_mean[start_idx:end_idx,0]).copy(),stream=stream_list[s])
-      mean_x_device = cuda.to_device((mean_x[start_idx:end_idx,0]).copy(),stream=stream_list[s])
-      
-      exp_weighted_avg_3D[blockspergrid,threadsperblock,stream_list[s]](running_mean_device,mean_x_device,momentum,end_idx-start_idx)
-      cuda.synchronize()
-      running_para["running_mean"][start_idx:end_idx,0] = running_mean_device.copy_to_host(stream=stream_list[s])
+    running_para["running_mean"] = momentum*(running_mean.reshape(1,1,1,n_C)) + (1-momentum)*(mean_x.reshape(1,1,1,n_C))
 
     #update running var
-    for s in range(number_of_streams):
-
-      start_idx = s * segment_size
-      end_idx = (s + 1) * segment_size
-
-      if end_idx > n_C:
-
-        end_idx = n_C
-      
-      running_var_device = cuda.to_device((running_var[start_idx:end_idx,0]).copy(),stream=stream_list[s])
-      var_x_device = cuda.to_device((var_x[start_idx:end_idx,0]).copy(),stream=stream_list[s])
-      
-      exp_weighted_avg_3D[blockspergrid,threadsperblock,stream_list[s]](running_var_device,var_x_device,momentum,end_idx-start_idx)
-      cuda.synchronize()
-      running_para["running_var"][start_idx:end_idx,0] = running_var_device.copy_to_host(stream=stream_list[s])
+    running_para["running_var"] = momentum*(running_var.reshape(1,1,1,n_C)) + (1-momentum)*(var_x.reshape(1,1,1,n_C))
     
     #Calculate Z_norm
     Z_NORM = np.zeros_like(Z)
@@ -1415,7 +1387,7 @@ if __name__ == "__main__":
         obj= Layers.Batch_Normalization_Layer()
 
         #GPU
-        Z = np.random.randn(32,308,492,32)
+        Z = np.random.randn(10,308,492,64)
 
         m,n_H,n_W,n_C = Z.shape
 
@@ -1431,7 +1403,7 @@ if __name__ == "__main__":
 
         #GPU
         gpu_time = time.time()
-        k1,cacheL = BatchNormalization_Forward3D(Z,batch_para,running_para,mode="test")
+        k1,cacheL = BatchNormalization_Forward3D(Z,batch_para,running_para)
         print(f"GPU: {time.time()-gpu_time} ")
         
         #CPU
@@ -1442,7 +1414,7 @@ if __name__ == "__main__":
         batch_para["gamma"] = batch_para["gamma"].reshape(1,1,1,n_C)
         batch_para["beta"] = batch_para["beta"].reshape(1,1,1,n_C)
         cpu_time = time.time()
-        k2,cacheBL = obj.batch_forward(Z,batch_para,running_para,mode="test")
+        k2,cacheBL = obj.batch_forward(Z,batch_para,running_para)
         print(f"CPU: {time.time() - cpu_time}")
 
         print(np.allclose(k1,k2))
