@@ -557,16 +557,16 @@ class Batch_Normalization_Layer:
         """
         Z,Z_NORM,Z_S,gamma,beta,epsilon,mean_mu,var_sig = cacheBL
 
-        m = Z.shape[0]
+        m,n_H,n_W,n_C = Z.shape
 
         dZ_NORM = gamma*dZ_S
-        dvar_sig = (-(Z-mean_mu)*dZ_NORM/(2*((var_sig+epsilon)**(1.5)))).sum(axis=0,keepdims=True)
-        dmean_mu = (-dZ_NORM/np.sqrt(var_sig+epsilon)).sum(axis=0,keepdims=True)+dvar_sig*(-2/m)*(Z-mean_mu).sum(axis=0,keepdims=True)
+        dvar_sig = (-(Z-mean_mu)*dZ_NORM/(2*((var_sig+epsilon)**(1.5)))).sum(axis=(0,1,2),keepdims=True)
+        dmean_mu = (-dZ_NORM/np.sqrt(var_sig+epsilon)).sum(axis=(0,1,2),keepdims=True)+dvar_sig*(-2/m)*(Z-mean_mu).sum(axis=(0,1,2),keepdims=True)
 
         #print(f"dvar:{dvar_sig} , dmean:{dmean_mu}")
-        dZ = dZ_NORM/np.sqrt(var_sig+epsilon)+dmean_mu/m+dvar_sig*2*(Z-mean_mu)/m
-        dgamma = (Z_NORM*dZ_S).sum(axis=0,keepdims=True)
-        dbeta = (dZ_S).sum(axis=0,keepdims=True)
+        dZ = dZ_NORM/np.sqrt(var_sig+epsilon)+dmean_mu/(m*n_H*n_W)+dvar_sig*2*(Z-mean_mu)/(m*n_H*n_W)
+        dgamma = (Z_NORM*dZ_S).sum(axis=(0,1,2),keepdims=True)
+        dbeta = (dZ_S).sum(axis=(0,1,2),keepdims=True)
 
         #print(f"dZ_NORM:{dZ_NORM}")
 
