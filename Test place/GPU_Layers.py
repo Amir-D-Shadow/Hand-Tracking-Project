@@ -1470,11 +1470,11 @@ if __name__ == "__main__":
         
         #BatchNormalization
 
-      
+        """
         obj= Layers.Batch_Normalization_Layer()
         #backward
-        Z = np.random.randn(16,308,392,128)
-        dZ_S = np.random.randn(16,308,392,128)
+        Z = np.random.randn(16,308,392,32)
+        dZ_S = np.random.randn(16,308,392,32)
         m,n_H,n_W,n_C = Z.shape
 
         batch_para = {}
@@ -1489,19 +1489,23 @@ if __name__ == "__main__":
 
         #GPU
         Z_S,cacheL = BatchNormalization_Forward3D(Z,batch_para,running_para)
+        running_mean = running_para["running_mean"]
+        running_var = running_para["running_var"]
         gpu_time = time.time()
         dZ,dgamma,dbeta = BatchNormalization_Backward3D(dZ_S,cacheL,threadsperblock=(8,8,8))
         print(f"GPU: {time.time()-gpu_time} ")
        
         #CPU
-        running_para["running_mean"] = running_para["running_mean"].reshape(1,1,1,n_C)
-        running_para["running_var"] = running_para["running_var"].reshape(1,1,1,n_C)
+        running_para["running_mean"] = np.zeros((1,1,1,n_C)).astype("float64")
+        running_para["running_var"] = np.zeros((1,1,1,n_C)).astype("float64")
         running_para["momentum"] = 0.9
 
         batch_para["gamma"] = batch_para["gamma"].reshape(1,1,1,n_C)
         batch_para["beta"] = batch_para["beta"].reshape(1,1,1,n_C)
         
         Z_C,cacheBL = obj.batch_forward(Z,batch_para,running_para)
+        running_mean_c = running_para["running_mean"]
+        running_var_c = running_para["running_var"]
         cpu_time = time.time()
         dZc,dgammac,dbetac = obj.batch_backward(dZ_S,cacheBL)
         print(f"CPU: {time.time() - cpu_time}")
@@ -1509,7 +1513,10 @@ if __name__ == "__main__":
         print(f"dZ:{np.allclose(dZ,dZc)}")
         print(f"dgamma:{np.allclose(dgamma,dgammac.reshape(n_C,1))}")
         print(f"dbeta:{np.allclose(dbeta,dbetac.reshape(n_C,1))}")
-        
+
+        print(np.allclose(running_mean_c.reshape(n_C,1),running_mean))
+        print(np.allclose(running_var_c.reshape(n_C,1),running_var))
+        """
         
         #forward
         """
